@@ -1069,6 +1069,17 @@ def _shape(des, shape):
     the box, an open surface body (that face on its own), a box inside a moved
     occurrence."""
     tbm = adsk.fusion.TemporaryBRepManager.get()
+    if shape == 'shell':
+        # a CAD part with 2 mm walls: a hollow 60 x 40 x 20 mm box
+        outer = adsk.core.OrientedBoundingBox3D.create(
+            adsk.core.Point3D.create(0, 0, 0), adsk.core.Vector3D.create(1, 0, 0),
+            adsk.core.Vector3D.create(0, 1, 0), 6.0, 4.0, 2.0)
+        inner = adsk.core.OrientedBoundingBox3D.create(
+            adsk.core.Point3D.create(0, 0, 0), adsk.core.Vector3D.create(1, 0, 0),
+            adsk.core.Vector3D.create(0, 1, 0), 5.6, 3.6, 1.6)
+        o, i = tbm.createBox(outer), tbm.createBox(inner)
+        tbm.booleanOperation(o, i, adsk.fusion.BooleanTypes.DifferenceBooleanType)
+        return [_add_temp(des, o, 'shell')]
     if shape == 'ball':
         tmp = tbm.createSphere(adsk.core.Point3D.create(0, 0, 0), 1.0)
         return [_add_temp(des, tmp, 'ball')]
@@ -1210,7 +1221,27 @@ def dev_tsm(app, job):
     return _in_scratch(app, job, run)
 
 
+def dev_dump_region(app, job):
+    """Write a test region's tessellation (as the engine gets it) and copy the
+    files to job['out'], for offline study."""
+    import shutil
+    def run(des):
+        reg = read_region(_shape(des, job['shape']), job.get('whole', False))
+        paths = write_region(reg)
+        os.makedirs(job['out'], exist_ok=True)
+        out = {}
+        for k, v in paths.items():
+            if v:
+                dst = os.path.join(job['out'], '%s_%s.bin' % (job['shape'], k))
+                shutil.copyfile(v, dst)
+                out[k] = dst
+        out['closed'] = reg['closed']
+        return out
+    return _in_scratch(app, job, run)
+
+
 DEV_COMMANDS = {
+    'dump_region': dev_dump_region,
     'tsm': dev_tsm,
     'ping': dev_ping,
     'region': dev_region,

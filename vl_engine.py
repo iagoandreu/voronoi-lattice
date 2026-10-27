@@ -556,6 +556,33 @@ def junction_count(A, B):
     return int(np.sum(c >= 3))
 
 
+def traced_surface(R, edge):
+    """The region refined for tracing, kept between the porosity loop's builds:
+    the cell size moves a few per cent per build and the refinement with it, and
+    redoing it was 4 s of a 23 s graph. A cached one is reused while it is fine
+    enough and not wastefully finer."""
+    c = R.get('_trace')
+    if c is not None and 0.6 * edge <= c[3] <= edge * 1.0001:
+        return c
+    Vf, Ff = refine(R['V'], R['F'], edge)
+    R['_trace'] = (Vf, Ff, vertex_normals(Vf, Ff), edge)
+    return R['_trace']
+
+
+def cached_volume_samples(R, phi, shift, lo, hi, M, rng):
+    """Points inside the region, kept between builds and topped up only when a
+    build needs more. Rejection sampling is the expensive part of a build -
+    VTK's distance holds the GIL, so it runs on one core - and on a thin-walled
+    part most candidates fall outside."""
+    pool = R.setdefault('_vsamples', {})
+    X = pool.get(shift)
+    if X is None or len(X) < M:
+        more = volume_samples(phi, lo, hi, M - (0 if X is None else len(X)), rng)
+        X = more if X is None else np.vstack([X, more])
+        pool[shift] = X
+    return X[:M]
+
+
 def build_graph(R, job, s, rng_seed):
     """Centrelines for cell size s. R is the prepared region."""
     rng = np.random.default_rng(int(rng_seed))
@@ -570,15 +597,16 @@ def build_graph(R, job, s, rng_seed):
     # the surface mesh the cells are traced on: finer than a cell and than a strut
     edge = min(s / 8.0, max(r, s / 30.0))
     edge = max(edge, math.sqrt(R['area'] / 2.5e6))
-    Vf, Ff = refine(V, F, edge)
-    Vn = vertex_normals(Vf, Ff)
+    Vf, Ff, Vn, edge = traced_surface(R, edge)
     # chords may leave the traced curve by tol: keep it a small part of a strut
     tol = min(0.1 * r, 0.05 * s)
     info = {'cell_mm': s, 'trace_edge_mm': edge}
     parts_A, parts_B = [], []
 
     if kind == 'volume':
-        sdf = SignedDistance(V, F)
+        if '_sdf' not in R:
+            R['_sdf'] = SignedDistance(V, F)
+        sdf = R['_sdf']
 
         def phi(X):
             return sdf(X) - shift
@@ -586,7 +614,8 @@ def build_graph(R, job, s, rng_seed):
         lo, hi = V.min(0) - abs(shift), V.max(0) + abs(shift)
         env = P.envelope('volume', job['placement'], d, R['volume'], R['area'])
         n = max(4, int(round(env / s ** 3)))
-        Xs = volume_samples(phi, lo, hi, min(max(30 * n, 30000), 3_000_000), rng)
+        Xs = cached_volume_samples(R, phi, shift, lo, hi,
+                                   min(max(30 * n, 30000), 3_000_000), rng)
         seeds = Xs[rng.choice(len(Xs), min(n, len(Xs)), replace=False)]
         seeds, _ = lloyd(seeds, Xs, iters)
         Vv, E = voronoi_edges(seeds, lo, hi, s)
@@ -894,49 +923,160 @@ class StrutField:
         return float(inside.mean() * len(act) * (Bk * self.h) ** 3)
 
 
-def mesh_struts(A, B, d, h, trim=None, surf_pts=None, log=None, iso=None,
-                blend=0.0, field=None):
-    """The field of StrutField contoured, slab by slab, by flying edges."""
-    import pyvista as pv
-    F = field or StrutField(A, B, d, h, blend, trim, surf_pts, iso)
+def _slab_field(spec):
+    """The strut field on one slab of the grid (planes k0..k1 inclusive), in its
+    own process - the numpy-heavy half of the meshing."""
+    (A, B, d, h, blend, trimVF, near, iso, k0, k1) = spec
+    trim = SignedDistance(*trimVF) if trimVF is not None else None
+    F = StrutField(A, B, d, h, blend, trim, near, iso)
     lo, far = F.lo, F.far
-    nx, ny, nz = (np.ceil((F.hi - lo) / h).astype(int) + 1)
+    nx, ny, _nz = (np.ceil((F.hi - lo) / h).astype(int) + 1)
+    snz = k1 - k0 + 1
     Bk = 6
     off = np.stack(np.meshgrid(np.arange(Bk), np.arange(Bk), np.arange(Bk),
                                indexing='ij'), -1).reshape(-1, 3)
-    layers = max(Bk, int(P.MAX_VOXELS_SLAB // max(nx * ny, 1)) // Bk * Bk)
-    pieces = []
-    k0 = 0
-    solid_vox = 0
-    while k0 < nz - 1:
-        k1 = min(nz - 1, k0 + layers)
-        snz = k1 - k0 + 1
-        fld = np.full((nx, ny, snz), far, np.float32)
-        origin = lo + np.array([0, 0, k0]) * h
-        act = F.active_blocks(origin, (nx, ny, snz), Bk)
-        for c0 in range(0, len(act), 8000):
-            idx = (act[c0:c0 + 8000, None, :] + off[None]).reshape(-1, 3)
-            ok = (idx[:, 0] < nx) & (idx[:, 1] < ny) & (idx[:, 2] < snz)
-            idx = idx[ok]
-            fld[idx[:, 0], idx[:, 1], idx[:, 2]] = F.value(origin + idx * h)
-        solid_vox += (int(np.sum(fld[:, :, :-1] < 0)) if k1 < nz - 1
-                      else int(np.sum(fld < 0)))
-        grid = pv.ImageData(dimensions=(nx, ny, snz), spacing=(h, h, h),
-                            origin=tuple(origin))
-        grid.point_data['f'] = fld.ravel(order='F')
-        piece = grid.contour([F.iso], scalars='f', method='flying_edges',
-                             compute_scalars=False)
-        if piece.n_cells:
-            pieces.append(piece)
-        if log:
-            log('Meshing the struts: %d %%' % (100 * k1 // max(nz - 1, 1)))
-        k0 = k1
-    if not pieces:
+    fld = np.full((nx, ny, snz), far, np.float32)
+    origin = lo + np.array([0, 0, k0]) * h
+    act = F.active_blocks(origin, (nx, ny, snz), Bk)
+    for c0 in range(0, len(act), 8000):
+        idx = (act[c0:c0 + 8000, None, :] + off[None]).reshape(-1, 3)
+        ok = (idx[:, 0] < nx) & (idx[:, 1] < ny) & (idx[:, 2] < snz)
+        idx = idx[ok]
+        fld[idx[:, 0], idx[:, 1], idx[:, 2]] = F.value(origin + idx * h)
+    return k0, k1, fld
+
+
+def _chunk_decimate(spec):
+    """Quadric decimation of one chunk of a CONTINUOUS mesh, its cut edges held:
+    MeshLab's collapse with preserveboundary leaves those vertices where they
+    are, so the chunks fit back together exactly. VTK's decimate_pro on the same
+    7 M-triangle lattice left 2206 non-manifold edges (the raw contour had none)
+    and took 5.7 % off the volume; this kept it closed and within 0.3 %."""
+    pts, fac, keep = spec
+    if keep >= 1.0 or len(fac) < 200:
+        return pts, fac
+    try:
+        import pymeshlab
+    except ImportError:
+        import pyvista as pv
+        pc = pv.PolyData(pts, np.hstack([np.full((len(fac), 1), 3), fac]).ravel())
+        pc = pc.decimate_pro(1.0 - keep, preserve_topology=True, feature_angle=60.0,
+                             splitting=False, boundary_vertex_deletion=False)
+        return (np.asarray(pc.points, np.float64),
+                np.asarray(pc.faces).reshape(-1, 4)[:, 1:].astype(np.int64))
+    ms = pymeshlab.MeshSet()
+    ms.add_mesh(pymeshlab.Mesh(pts, fac.astype(np.int32)))
+    ms.meshing_decimation_quadric_edge_collapse(
+        targetfacenum=max(4, int(len(fac) * keep)), preserveboundary=True,
+        boundaryweight=1000.0, preservetopology=True, preservenormal=True,
+        optimalplacement=True, autoclean=False)
+    m = ms.current_mesh()
+    return m.vertex_matrix().astype(np.float64), m.face_matrix().astype(np.int64)
+
+
+MAX_GRID_VOXELS = 600_000_000      # ~2.4 GB of float32; beyond it, serial slabs
+PARALLEL_MIN_VOXELS = 10_000_000
+
+
+def mesh_struts(A, B, d, h, trim=None, surf_pts=None, log=None, iso=None,
+                blend=0.0, field=None, trimVF=None, smooth=0, max_tris=None,
+                workers=None):
+    """The strut field contoured into a watertight surface, using every core.
+
+    Serial, a 60 x 40 x 20 mm part took 21 s for the field and contour, then
+    31 s to smooth and decimate its 7 million triangles, plus 10 s of pyvista
+    clean(). Now: the FIELD is computed slab by slab in parallel processes and
+    assembled into one grid; that grid is contoured ONCE (so there is no seam
+    to stitch - contouring the slabs separately left slits a vertex long on the
+    cut planes); it is smoothed once; and only the decimation, the slow part,
+    is split again, into chunks of the continuous mesh whose cut edges are held
+    fixed, so they fit back exactly."""
+    import pyvista as pv
+    from concurrent.futures import ProcessPoolExecutor
+    Fd = field or StrutField(A, B, d, h, blend, trim, surf_pts, iso)
+    lo = Fd.lo
+    nx, ny, nz = (np.ceil((Fd.hi - lo) / h).astype(int) + 1)
+    ncpu = workers or max(1, min(28, (os.cpu_count() or 2) - 2))
+    if nx * ny * nz > MAX_GRID_VOXELS or nx * ny * nz < PARALLEL_MIN_VOXELS:
+        # too big to hold whole, or too small to be worth starting processes
+        # (each one pays ~2 s to start and import VTK)
+        ncpu = 1
+    Bk = 6
+    want = max(Bk, int(math.ceil((nz - 1) / (2.0 * ncpu) / Bk)) * Bk)
+    cuts = list(range(0, nz - 1, want)) + [nz - 1]
+    slabs = [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1) if cuts[i + 1] > cuts[i]]
+    specs = [(A, B, d, h, Fd.blend, trimVF, surf_pts, Fd.iso, k0, k1) for k0, k1 in slabs]
+    if log:
+        log('Struts field: %d slabs on %d processes' % (len(slabs), min(ncpu, len(slabs))))
+    grid_f = np.empty((nx, ny, nz), np.float32)
+    if ncpu > 1 and len(slabs) > 1:
+        with ProcessPoolExecutor(max_workers=min(ncpu, len(slabs))) as ex:
+            for k0, k1, fld in ex.map(_slab_field, specs):
+                grid_f[:, :, k0:k1 + 1] = fld
+    else:
+        for sp in specs:
+            k0, k1, fld = _slab_field(sp)
+            grid_f[:, :, k0:k1 + 1] = fld
+    solid_vox = int(np.sum(grid_f < 0))
+    grid = pv.ImageData(dimensions=(nx, ny, nz), spacing=(h, h, h), origin=tuple(lo))
+    grid.point_data['f'] = grid_f.ravel(order='F')
+    del grid_f
+    surf = grid.contour([Fd.iso], scalars='f', method='flying_edges', compute_scalars=False)
+    del grid
+    if not surf.n_cells:
         raise LatticeError('the struts produced no surface')
-    surf = pieces[0].merge(pieces[1:]) if len(pieces) > 1 else pieces[0]
-    surf = surf.clean(tolerance=1e-6 * h, absolute=True, **TRIS_ONLY).triangulate()
+    surf = surf.triangulate()
+    raw = surf.n_cells
+    if smooth:
+        surf = surf.smooth_taubin(n_iter=int(smooth), pass_band=0.1)
+    pts = np.asarray(surf.points, np.float64)
+    fac = np.asarray(surf.faces).reshape(-1, 4)[:, 1:].astype(np.int64)
+    keep = 1.0 if not max_tris else min(1.0, float(max_tris) / max(len(fac), 1))
+    if keep < 1.0:
+        # Compact 3D blocks (by triangle centroid), each decimated with its cut
+        # edges held and welded back on those same vertices. Not thin z slabs:
+        # 28 slabs cut every strut into short tubes with held ends, and the
+        # collapse narrowed them - 11 % of the volume gone and 37 % over the
+        # triangle budget. 12 blocks (3 x 2 x 2) kept it within 0.4 %, on budget.
+        nchunk = max(1, min(max(ncpu, 1 if len(fac) < 1_500_000 else 12), 12,
+                            len(fac) // 200000))
+        cen = pts[fac].mean(1)
+        ext = cen.max(0) - cen.min(0)
+        split = [1, 1, 1]
+        while split[0] * split[1] * split[2] < nchunk:
+            ax = int(np.argmax(ext / np.array(split)))
+            split[ax] += 1
+        cid = np.zeros(len(fac), np.int64)
+        mul = 1
+        for ax in range(3):
+            if split[ax] > 1:
+                e = np.quantile(cen[:, ax], np.linspace(0, 1, split[ax] + 1)[1:-1])
+                cid += np.searchsorted(e, cen[:, ax]) * mul
+            mul *= split[ax]
+        cspecs = []
+        for c in np.unique(cid):
+            fc = fac[cid == c]
+            used, inv = np.unique(fc, return_inverse=True)
+            cspecs.append((pts[used], inv.reshape(-1, 3), keep))
+        if log:
+            log('Decimating %d triangles to %d in %d chunks' % (len(fac), max_tris, nchunk))
+        nchunk = len(cspecs)
+        if nchunk > 1:
+            with ProcessPoolExecutor(max_workers=min(ncpu, nchunk)) as ex:
+                parts = list(ex.map(_chunk_decimate, cspecs))
+        else:
+            parts = [_chunk_decimate(cspecs[0])]
+        pl, fl, base = [], [], 0
+        for pp, ff in parts:
+            pl.append(pp)
+            fl.append(ff + base)
+            base += len(pp)
+        # the held cut vertices are bit-identical copies: weld them
+        pts, fac = weld(np.vstack(pl), np.vstack(fl), 1e-6 * h)
+    surf = pv.PolyData(pts, np.hstack([np.full((len(fac), 1), 3), fac]).ravel())
     return surf, {'grid': [int(nx), int(ny), int(nz)], 'voxel_mm': h,
-                  'voxel_volume_mm3': solid_vox * h ** 3}
+                  'voxel_volume_mm3': solid_vox * h ** 3, 'slabs': len(slabs),
+                  'processes': min(ncpu, len(slabs)), 'raw_triangles': int(raw)}
 
 
 # clean() by default turns a collapsed triangle into a line, and one line makes
@@ -944,16 +1084,19 @@ def mesh_struts(A, B, d, h, trim=None, surf_pts=None, log=None, iso=None,
 TRIS_ONLY = dict(lines_to_points=False, polys_to_lines=False)
 
 
-def finish_mesh(surf, max_tris, smooth=10):
+def finish_mesh(surf, max_tris, smooth=10, done=False):
+    """Specks out, and the topology measured. With done=True the smoothing and
+    decimation already happened slab by slab (mesh_struts)."""
     import pyvista as pv
     raw = surf.n_cells
-    if smooth:
-        surf = surf.smooth_taubin(n_iter=int(smooth), pass_band=0.1)
-    if surf.n_cells > max_tris:
-        surf = surf.decimate_pro(1.0 - max_tris / surf.n_cells, preserve_topology=True,
-                                 feature_angle=60.0, splitting=False,
-                                 boundary_vertex_deletion=False)
-    surf = surf.clean(**TRIS_ONLY).triangulate()
+    if not done:
+        if smooth:
+            surf = surf.smooth_taubin(n_iter=int(smooth), pass_band=0.1)
+        if surf.n_cells > max_tris:
+            surf = surf.decimate_pro(1.0 - max_tris / surf.n_cells, preserve_topology=True,
+                                     feature_angle=60.0, splitting=False,
+                                     boundary_vertex_deletion=False)
+        surf = surf.clean(**TRIS_ONLY).triangulate()
     conn = surf.connectivity('all')
     reg = np.asarray(conn.cell_data['RegionId'])
     sizes = np.bincount(reg)
@@ -1126,12 +1269,17 @@ def run(job, log=None):
         return out
 
     mo = P.mesh_organic(float(job.get('organic', 1)), d)
-    surf, mi = mesh_struts(A, B, d, M.h, log=log, field=M.field(A, B))
+    surf, mi = mesh_struts(A, B, d, M.h, log=log, field=M.field(A, B),
+                           trimVF=(R['V'], R['F']) if M.trim is not None else None,
+                           smooth=job.get('smooth', mo['smooth']),
+                           max_tris=int(job.get('max_tris', 1_500_000)),
+                           workers=job.get('workers'))
     timing['field_s'] = time.time() - t1
     t1 = time.time()
-    log('Smoothing and decimating %d triangles' % surf.n_cells)
+    log('Finishing %d triangles' % surf.n_cells)
     surf, fi = finish_mesh(surf, int(job.get('max_tris', 1_500_000)),
-                           job.get('smooth', mo['smooth']))
+                           job.get('smooth', mo['smooth']), done=True)
+    fi['raw_triangles'] = mi.get('raw_triangles', fi['raw_triangles'])
     timing['finish_s'] = time.time() - t1
     mi.update(fi)
     surf = outward(surf)
