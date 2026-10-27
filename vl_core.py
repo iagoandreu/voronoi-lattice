@@ -70,7 +70,7 @@ DEFAULTS = {
     'place': 0, 'flip': False, 'skin': True, 'border': True, 'define': 0,
     'porosity': 80.0, 'cell': 3.0, 'thickness': 0.6, 'regularity': 5, 'seed': 1,
     'resolution': 1, 'max_ktris': 1500, 'replace': True, 'hide': True,
-    'preview': True, 'organic': 3, 'output': 0,
+    'preview': False, 'organic': 3, 'output': 0,
 }
 
 
@@ -502,8 +502,8 @@ def on_created(app, cmd):
                              '', bool(s['replace']))
     inputs.addBoolValueInput('hide', 'Hide the region afterwards', True, '',
                              bool(s['hide']))
-    inputs.addBoolValueInput('preview', 'Preview struts', True, '',
-                             bool(s['preview']))
+    # off at every opening, whatever was used last: a preview recomputes on every change
+    inputs.addBoolValueInput('preview', 'Preview struts', True, '', False)
     info = inputs.addTextBoxCommandInput('info', '', '', 12, True)
     info.isFullWidth = True
     refresh(inputs)
