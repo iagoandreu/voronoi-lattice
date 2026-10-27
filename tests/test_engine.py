@@ -309,13 +309,44 @@ def test_form():
           ci['folded'] == 0 and ci['rings_pushed'] == 0, ci)
 
 
+def test_remesh():
+    print('region remeshing')
+    box = trimesh.creation.box((40, 30, 20))       # 12 triangles, 50 mm diagonals
+    r = E.run(job('rm_box', box, mode='graph', define='cell', cell=3.0))
+    rm = r['region']['remesh']
+    check('a CAD-like box (12 triangles) is remeshed automatically',
+          rm['done'] and rm['method'] == 'isotropic', rm.get('method'))
+    check('to edges of half a cell on average, none over twice that',
+          abs(rm['after']['mean_edge_mm'] / rm['target_edge_mm'] - 1.0) < 0.15
+          and rm['after']['max_edge_mm'] <= 2.1 * rm['target_edge_mm'],
+          'mean %.2f max %.2f target %.2f mm' % (rm['after']['mean_edge_mm'],
+                                                 rm['after']['max_edge_mm'], rm['target_edge_mm']))
+    check('keeping the volume within 0.5 %', abs(rm['volume_change']) < 0.005,
+          '%+.4f %%' % (100 * rm['volume_change']))
+    check('and the reported region is the box', abs(r['region']['volume_mm3'] - 24000.0) < 120.0)
+    r = E.run(job('rm_off', box, mode='graph', define='cell', cell=3.0, remesh='off'))
+    rm = r['region']['remesh']
+    check('off: left alone, but flagged', not rm['done'] and rm['needed'])
+    ball = trimesh.creation.icosphere(subdivisions=4, radius=10.0)
+    r = E.run(job('rm_ball', ball, mode='graph', define='cell', cell=3.0))
+    check('a fine mesh is not touched', not r['region']['remesh']['done'],
+          '%.2f mm edges' % r['region']['remesh']['before']['max_edge_mm'])
+    r = E.run(job('rm_edge', box, mode='graph', define='cell', cell=3.0,
+                  remesh='always', remesh_edge=2.5))
+    rm = r['region']['remesh']
+    check('the target edge can be set', rm['target_edge_mm'] == 2.5
+          and abs(rm['after']['mean_edge_mm'] / 2.5 - 1.0) < 0.15,
+          'mean %.2f mm' % rm['after']['mean_edge_mm'])
+
+
 def test_errors():
     print('refusals')
     box = trimesh.creation.box((10, 10, 10))
     for bad, why in ((dict(thickness=0.0), 'zero thickness'),
                      (dict(define='cell', cell=0.5, thickness=0.6), 'cell <= strut'),
                      (dict(kind='volume', closed=False), 'volume on an open region'),
-                     (dict(placement='inside'), 'unknown placement')):
+                     (dict(placement='inside'), 'unknown placement'),
+                     (dict(remesh='sometimes'), 'unknown remesh mode')):
         try:
             E.run(job('bad', box, mode='graph', **bad))
             check('refuses %s' % why, False)
@@ -333,6 +364,7 @@ def main():
     test_volume()
     test_surface()
     test_thin_wall()
+    test_remesh()
     test_organic_mesh()
     test_form()
     test_errors()
