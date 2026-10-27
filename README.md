@@ -27,6 +27,8 @@ Command: **Voronoi Lattice**, in *Solid > Create* and *Mesh > Modify*.
 | **Shape > Output** | *Form*: a real T-spline body, smooth and editable in the Form workspace. *Mesh*: a watertight triangle mesh, any density. A Form that cannot be built becomes a mesh, and the preview and the report both say why. |
 | **Mesh > Resolution** | Voxels per strut diameter: 3, 4 or 6. |
 | **Mesh > Max triangles** | The mesh is decimated (topology-preserving) down to this. |
+| **Region remeshing (advanced) > Remesh the region** | Automatic (default): when the region's triangle mesh has an edge over 5 mm (or over twice the target) or more than 5 % of its area in sliver triangles - what a CAD body tessellates into - it is remeshed isotropically (MeshLab, feature edges over 30 deg kept), and the result is accepted only if it stays closed with the volume within 0.5 %; otherwise it is subdivided exactly. Always / Never. The report says what was done. |
+| **Region remeshing > Target edge** | 0 = half a cell, never over 5 mm (raised only past 600 k triangles). |
 | **Preview struts** | Draws the strut centrelines live, in orange. |
 
 The panel underneath shows, live, the cell size, the pore size, the cell count, the
