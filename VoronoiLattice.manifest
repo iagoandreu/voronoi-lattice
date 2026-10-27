@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion",
+    "type": "addin",
+    "id": "28d6206a-1c93-45f9-addf-76bbde6cddbe",
+    "author": "Iago Andreu",
+    "description": {
+        "": "Voronoi lattice of a volume, a surface or a set of faces: inside or on the skin, flush, middle or external, sized by porosity or cell size, organic 1-10, as a Form (T-spline) body or a watertight mesh."
+    },
+    "version": "0.2.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}
