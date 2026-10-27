@@ -65,12 +65,15 @@ OUTPUTS = [('form', 'Form (T-spline body)'), ('mesh', 'Mesh body')]
 RESOLUTIONS = [('coarse', 'Coarse (3 voxels per strut)'),
                ('medium', 'Medium (4 voxels per strut)'),
                ('fine', 'Fine (6 voxels per strut)')]
+REMESH = [('auto', 'Automatic - long edges or slivers'),
+          ('always', 'Always'),
+          ('off', 'Never')]
 
 DEFAULTS = {
     'place': 0, 'flip': False, 'skin': True, 'border': True, 'define': 0,
     'porosity': 80.0, 'cell': 3.0, 'thickness': 0.6, 'regularity': 5, 'seed': 1,
     'resolution': 1, 'max_ktris': 1500, 'replace': True, 'hide': True,
-    'preview': False, 'organic': 3, 'output': 0,
+    'preview': False, 'organic': 3, 'output': 0, 'remesh': 0, 'remesh_edge': 0.0,
 }
 
 
@@ -353,6 +356,8 @@ def params_from(inputs, reg):
         'max_tris': int(_item(inputs, 'max_ktris').value) * 1000,
         'organic': int(_item(inputs, 'organic').valueOne),
         'output': _drop(inputs, 'output', OUTPUTS),
+        'remesh': _drop(inputs, 'remesh', REMESH),
+        'remesh_edge': _item(inputs, 'remesh_edge').value * CM,
     }
 
 
@@ -372,6 +377,7 @@ def settings_from(inputs):
         'replace': _item(inputs, 'replace').value, 'hide': _item(inputs, 'hide').value,
         'preview': _item(inputs, 'preview').value,
         'organic': int(_item(inputs, 'organic').valueOne), 'output': idx('output'),
+        'remesh': idx('remesh'), 'remesh_edge': _item(inputs, 'remesh_edge').value * CM,
     }
 
 
@@ -497,6 +503,23 @@ def on_created(app, cmd):
         rs.listItems.add(lab, i == int(s['resolution']))
     mi.addIntegerSpinnerCommandInput('max_ktris', 'Max triangles (k)', 50, 20000,
                                      250, int(s['max_ktris']))
+
+    g = inputs.addGroupCommandInput('gRemesh', 'Region remeshing (advanced)')
+    g.isExpanded = False
+    gi = g.children
+    rm = gi.addDropDownCommandInput('remesh', 'Remesh the region', tl)
+    for i, (_k, lab) in enumerate(REMESH):
+        rm.listItems.add(lab, i == int(s.get('remesh', 0)))
+    rm.tooltip = ('The lattice is traced on a triangle mesh of the region. A CAD body '
+                  'tessellates into long thin fans - edges of tens of mm - and on such '
+                  'meshes pores came out stretched and struts left thin walls. '
+                  'Automatic: the region is remeshed isotropically (sharp CAD edges '
+                  'kept, volume checked) when an edge is over 5 mm or over twice the '
+                  'target, or when over 5 % of the area is sliver triangles.')
+    re_ = gi.addValueInput('remesh_edge', 'Target edge (0 = auto)', 'mm',
+                           rl(float(s.get('remesh_edge', 0.0)) * MM))
+    re_.tooltip = ('Edge length of the remeshed region. 0: half a cell, never over '
+                   '5 mm (raised only if the region would pass 600 k triangles).')
 
     inputs.addBoolValueInput('replace', 'Replace the lattice made before', True,
                              '', bool(s['replace']))
@@ -943,6 +966,18 @@ def report(p, res):
                                              '' if m['components'] == 1 else 's')]
     if g.get('dropped_groups'):
         lines.append('%d loose strut groups removed.' % g['dropped_groups'])
+    rm = res.get('region', {}).get('remesh') or {}
+    if rm.get('done'):
+        lines.append('Region remeshed (%s): longest edge %.1f -> %.2f mm, %d -> %d '
+                     'triangles%s.' % (
+                         rm.get('method', ''), rm['before']['max_edge_mm'],
+                         rm['after']['max_edge_mm'], rm['before']['triangles'],
+                         rm['after']['triangles'],
+                         ', volume %+.2f %%' % (100.0 * rm['volume_change'])
+                         if 'volume_change' in rm else ''))
+    elif rm.get('needed') and rm.get('mode') == 'off':
+        lines.append('WARNING: the region has %.1f mm edges and remeshing is off.'
+                     % rm['before']['max_edge_mm'])
     lines.append('Took %.1f s.' % res['timing']['total_s'])
     return '\n'.join(lines)
 

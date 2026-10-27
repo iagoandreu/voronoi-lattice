@@ -176,6 +176,109 @@ def refine(V, F, max_edge):
 
 
 # --------------------------------------------------------------------------- #
+# region remeshing
+# --------------------------------------------------------------------------- #
+
+REMESH_MAX_EDGE_MM = 5.0       # the user's threshold: a CAD tessellation edge past it
+REMESH_SLIVER_ASPECT = 10.0    # longest edge / shortest altitude
+REMESH_SLIVER_AREA = 0.05      # fraction of the area in slivers that triggers it
+REMESH_MAX_TRIS = 600_000      # the target edge grows so the remesh stays below this
+REMESH_MODES = ('auto', 'always', 'off')
+
+
+def region_quality(V, F):
+    """Longest edge, and the share of the area in sliver triangles. A CAD body
+    tessellated by Fusion is long thin fans across every flat face: edges of
+    tens of mm and aspect ratios in the hundreds."""
+    e = np.stack([np.linalg.norm(V[F[:, i]] - V[F[:, (i + 1) % 3]], axis=1)
+                  for i in range(3)], 1)
+    _tn, ta = tri_normals(V, F)
+    lmax = e.max(1)
+    alt = 2.0 * ta / np.maximum(lmax, 1e-12)
+    aspect = lmax / np.maximum(alt, 1e-12)
+    area = max(float(ta.sum()), 1e-12)
+    return {'max_edge_mm': float(e.max()), 'mean_edge_mm': float(e.mean()),
+            'sliver_area': float(ta[aspect > REMESH_SLIVER_ASPECT].sum() / area),
+            'triangles': int(len(F))}
+
+
+def remesh_target(job, R):
+    """The edge length the region is remeshed to: the user's, or half a cell
+    and never over 5 mm, raised if the region would pass REMESH_MAX_TRIS."""
+    want = float(job.get('remesh_edge') or 0.0)
+    if want <= 0:
+        d = float(job['thickness'])
+        try:
+            s = (float(job['cell']) if job.get('define', 'porosity') == 'cell'
+                 else P.cell_for(job['kind'], float(job['porosity']), d))
+        except P.PlanError:
+            s = 4.0 * d
+        want = min(REMESH_MAX_EDGE_MM, 0.5 * s)
+    # an equilateral mesh of edge L has about 2.3 * area / L^2 triangles
+    floor = math.sqrt(2.3 * R['area'] / REMESH_MAX_TRIS)
+    return max(want, floor)
+
+
+def remesh_region(V, F, closed, target):
+    """Isotropic remesh with MeshLab: edges near `target`, CAD edges (dihedral
+    over 30 deg) kept as features, vertices reprojected onto the original. It is
+    accepted only if it stays closed (a closed region) and keeps the volume within
+    0.5 % / the area within 1 %; otherwise the exact midpoint subdivision is used,
+    which bounds the edges but leaves the slivers. Returns V, F, method."""
+    import pymeshlab
+    ms = pymeshlab.MeshSet()
+    ms.add_mesh(pymeshlab.Mesh(np.ascontiguousarray(V, np.float64),
+                               np.ascontiguousarray(F, np.int32)))
+    try:
+        ms.meshing_isotropic_explicit_remeshing(
+            iterations=6, targetlen=pymeshlab.PureValue(target),
+            featuredeg=30.0, checksurfdist=True,
+            maxsurfdist=pymeshlab.PureValue(0.02 * target),
+            reprojectflag=True)
+        m = ms.current_mesh()
+        V2 = m.vertex_matrix().astype(np.float64)
+        F2 = m.face_matrix().astype(np.int64)
+    except pymeshlab.PyMeshLabException:
+        V2 = F2 = None
+    if V2 is not None and len(F2):
+        _t0, a0 = tri_normals(V, F)
+        _t1, a1 = tri_normals(V2, F2)
+        ok = abs(a1.sum() - a0.sum()) <= 0.01 * a0.sum()
+        if closed:
+            vol = lambda X, T: float(np.einsum('ij,ij->i', X[T[:, 0]],
+                                               np.cross(X[T[:, 1]], X[T[:, 2]])).sum() / 6.0)
+            v0, v1 = vol(V, F), vol(V2, F2)
+            ok = ok and not len(boundary_edges(F2)) and abs(v1 - v0) <= 0.005 * abs(v0)
+        if ok:
+            return V2, F2, 'isotropic'
+    V3, F3 = refine(V, F, target)
+    return V3, F3, 'subdivided'
+
+
+def maybe_remesh(job, R, log=None):
+    """Remesh the region when its tessellation would distort the lattice (mode
+    'auto'), always, or never. Returns the (possibly new) region and a report."""
+    mode = job.get('remesh', 'auto')
+    q = region_quality(R['V'], R['F'])
+    target = remesh_target(job, R)
+    rep_ = {'mode': mode, 'before': q, 'target_edge_mm': target, 'done': False}
+    need = (q['max_edge_mm'] > min(REMESH_MAX_EDGE_MM, 2.0 * target)
+            or q['sliver_area'] > REMESH_SLIVER_AREA)
+    rep_['needed'] = bool(need)
+    if mode == 'off' or (mode == 'auto' and not need):
+        return R, rep_
+    if log:
+        log('Remeshing the region to %.2f mm edges' % target)
+    V2, F2, how = remesh_region(R['V'], R['F'], R['closed'], target)
+    R2 = prepare(V2, F2, None, R['closed'])
+    rep_.update({'done': True, 'method': how, 'after': region_quality(R2['V'], R2['F'])})
+    if R['closed'] and R['volume']:
+        rep_['volume_change'] = R2['volume'] / R['volume'] - 1.0
+    rep_['area_change'] = R2['area'] / R['area'] - 1.0
+    return R2, rep_
+
+
+# --------------------------------------------------------------------------- #
 # seeds
 # --------------------------------------------------------------------------- #
 
@@ -1154,7 +1257,7 @@ def write_stl(surf, path):
 
 GRAPH_KEYS = ('kind', 'placement', 'flip', 'skin', 'border', 'define', 'porosity',
               'cell', 'thickness', 'regularity', 'seed', 'closed', 'organic',
-              'output', 'resolution')
+              'output', 'resolution', 'remesh', 'remesh_edge')
 
 FUSION_FORM_S_PER_FACE = 0.0042    # measured: 2195 faces 9.3 s ... 10097 faces 42 s
 
@@ -1192,6 +1295,10 @@ def validate(job):
         raise LatticeError('a volume lattice needs a closed region')
     if job['placement'] not in P.PLACEMENTS:
         raise LatticeError('placement must be flush, middle or external')
+    if job.get('remesh', 'auto') not in REMESH_MODES:
+        raise LatticeError('remesh must be auto, always or off')
+    if float(job.get('remesh_edge') or 0.0) < 0:
+        raise LatticeError('the remesh edge length cannot be negative')
     if job.get('output', 'mesh') not in ('form', 'mesh'):
         raise LatticeError('output must be form or mesh')
     if not 1.0 <= float(job.get('organic', 1)) <= 10.0:
@@ -1210,6 +1317,7 @@ def run(job, log=None):
     validate(job)
     V, F, N = load_region(job)
     R = prepare(V, F, N, bool(job.get('closed')))
+    R, remesh = maybe_remesh(job, R, log)
     timing = {'prepare_s': time.time() - t0}
     M = Measure(job, R)
     cache = None
@@ -1231,7 +1339,7 @@ def run(job, log=None):
     _, env = target_solid(job, R)
     output = info.get('output', 'mesh')
     out = {'region': {'closed': R['closed'], 'area_mm2': R['area'],
-                      'volume_mm3': R['volume'], 'envelope': env},
+                      'volume_mm3': R['volume'], 'envelope': env, 'remesh': remesh},
            'graph': info, 'timing': timing, 'output': output,
            'porosity_predicted': info['porosity_predicted']}
     if 'cage' in info:
