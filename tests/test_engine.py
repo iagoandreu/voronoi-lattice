@@ -213,6 +213,46 @@ def test_surface():
           and 'border_struts' not in r_n['graph'], r_b['graph'].get('border_struts'))
 
 
+def test_refine():
+    print('refining an uneven open surface (an imported STL)')
+    sheet, _N = curved_sheet(n=40)
+    rng = np.random.default_rng(2)
+    V = np.asarray(sheet.vertices).copy()
+    V[:, 1] += rng.uniform(-0.3, 0.3, len(V)) * (np.abs(V[:, 1]) < 19.0)
+    F = np.asarray(sheet.faces)
+    el = np.linalg.norm(V[F[:, [1, 2, 0]]] - V[F], axis=2)
+    rim = lambda P_, p_: float(np.linalg.norm(np.diff(P_[p_], axis=0), axis=1).sum())
+    rim0 = rim(V, E.border_paths(V, F)[0])
+    _t0, a0 = E.tri_normals(V, F)
+    # trimesh's subdivide_to_size left 436 / 104 / 436 border loops at these limits
+    loops_n, rim_err, dup, area_err, over = [], 0.0, 0, 0.0, 0.0
+    for fac in (0.6, 0.8, 1.2):
+        lim = float(np.median(el)) * fac
+        Vr, Fr = E.refine(V, F, lim)
+        loops = E.border_paths(Vr, Fr)
+        loops_n.append(len(loops))
+        rim_err = max(rim_err, abs(rim(Vr, loops[0]) - rim0))
+        d = np.vstack([Fr[:, [0, 1]], Fr[:, [1, 2]], Fr[:, [2, 0]]])
+        _u, c = np.unique(d, axis=0, return_counts=True)
+        dup += int((c > 1).sum())
+        _t1, a1 = E.tri_normals(Vr, Fr)
+        area_err = max(area_err, abs(a1.sum() / a0.sum() - 1.0))
+        el2 = np.linalg.norm(Vr[Fr[:, [1, 2, 0]]] - Vr[Fr], axis=2)
+        over = max(over, el2.max() - lim)
+    check('still one border loop: no cracks where one triangle split and its '
+          'neighbour did not', loops_n == [1, 1, 1], loops_n)
+    check('the border is as long as before', rim_err < 1e-6, rim_err)
+    check('orientation kept, no edge used twice the same way', dup == 0, dup)
+    check('area unchanged', area_err < 1e-12, area_err)
+    check('no edge left over the limit', over <= 1e-12, over)
+    # end to end: 80 % with struts too thick for the region is unreachable; the
+    # closest lattice is built and flagged, not an error
+    r = E.run(job('sheet_thick', sheet, closed=False, kind='surface', mode='graph',
+                  placement='external', thickness=3.0, porosity=0.8))
+    check('unreachable porosity: the closest lattice comes back, flagged',
+          r['graph'].get('porosity_unreached') is True, r['graph'].get('porosity_predicted'))
+
+
 def test_thin_wall():
     print('thin wall')
     plate = trimesh.creation.box((40, 40, 1.0))
@@ -363,6 +403,7 @@ def main():
     test_strut_volume()
     test_volume()
     test_surface()
+    test_refine()
     test_thin_wall()
     test_remesh()
     test_organic_mesh()

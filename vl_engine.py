@@ -167,12 +167,58 @@ class SignedDistance:
         return self._ns.vtk_to_numpy(out).copy()
 
 
-def refine(V, F, max_edge):
-    import trimesh
+def refine(V, F, max_edge, max_iter=12):
+    """Split every edge longer than max_edge at its midpoint until none is left.
+
+    CONFORMING: each edge is split once and both its triangles use that one
+    midpoint (1, 2 or 3 split edges per triangle -> 2, 3 or 4 triangles). trimesh's
+    subdivide_to_size refines triangle by triangle and returns a soup, so where
+    one triangle was split and its neighbour was not, a crack opened - on an open
+    STL surface every crack was taken for a border and got a border strut
+    (Dlab_236: 17000 border struts, porosity stuck at 72 % for any cell size)."""
+    V = np.asarray(V, float)
+    F = np.asarray(F, np.int64)
     if max_edge <= 0:
         return V, F
-    V2, F2 = trimesh.remesh.subdivide_to_size(V, F, max_edge, max_iter=12)
-    return np.asarray(V2, float), np.asarray(F2, np.int64)
+    for _ in range(max_iter):
+        E = np.sort(np.stack([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]], 1), axis=2)
+        uE, inv = np.unique(E.reshape(-1, 2), axis=0, return_inverse=True)
+        inv = inv.reshape(-1, 3)
+        long_ = np.linalg.norm(V[uE[:, 0]] - V[uE[:, 1]], axis=1) > max_edge
+        if not long_.any():
+            break
+        mid = np.full(len(uE), -1, np.int64)
+        mid[long_] = len(V) + np.arange(long_.sum())
+        V = np.vstack([V, 0.5 * (V[uE[long_, 0]] + V[uE[long_, 1]])])
+        M = mid[inv]                                  # midpoint of edge k (v_k, v_k+1)
+        S = M >= 0
+        ns = S.sum(1)
+        out = [F[ns == 0]]
+        # one split edge: rotate it to position 0
+        f1 = np.nonzero(ns == 1)[0]
+        if len(f1):
+            k = np.argmax(S[f1], 1)
+            r = (np.arange(3)[None, :] + k[:, None]) % 3
+            v = F[f1[:, None], r]
+            m0 = M[f1, k]
+            out += [np.stack([v[:, 0], m0, v[:, 2]], 1), np.stack([m0, v[:, 1], v[:, 2]], 1)]
+        # two split edges: rotate so edges 0 and 1 are split, 2 is not
+        f2 = np.nonzero(ns == 2)[0]
+        if len(f2):
+            k = (np.argmin(S[f2], 1) + 1) % 3          # the edge after the unsplit one
+            r = (np.arange(3)[None, :] + k[:, None]) % 3
+            v = F[f2[:, None], r]
+            m0, m1 = M[f2, k], M[f2, (k + 1) % 3]
+            out += [np.stack([m0, v[:, 1], m1], 1), np.stack([v[:, 0], m0, m1], 1),
+                    np.stack([v[:, 0], m1, v[:, 2]], 1)]
+        f3 = np.nonzero(ns == 3)[0]
+        if len(f3):
+            v, m = F[f3], M[f3]
+            out += [np.stack([v[:, 0], m[:, 0], m[:, 2]], 1),
+                    np.stack([m[:, 0], v[:, 1], m[:, 1]], 1),
+                    np.stack([m[:, 2], m[:, 1], v[:, 2]], 1), m]
+        F = np.vstack(out)
+    return V, F
 
 
 # --------------------------------------------------------------------------- #
@@ -843,7 +889,17 @@ def graph_for(job, R, log=None, measure=None):
     best = None
     hist = []
     for it in range(8):
-        A, B, info = build_graph(R, job, s, job.get('seed', 1))
+        try:
+            A, B, info = build_graph(R, job, s, job.get('seed', 1))
+        except LatticeError:
+            # a step overshot into cells larger than the region: what was built
+            # before is still the closest there is, and the report says so
+            if best is None:
+                raise
+            log('Cell size %.3f mm leaves no struts; keeping %.3f mm'
+                % (s, best[2]['cell_mm']))
+            best[2]['porosity_unreached'] = True
+            break
         try:
             vol, extra = M.volume(A, B, output)
         except FORM.CageError as exc:
