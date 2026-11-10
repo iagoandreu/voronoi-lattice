@@ -780,7 +780,14 @@ def preview_rows(p, res):
     if g.get('form_failed'):
         rows.append(('', '<b>No Form possible - this will be a mesh.</b> %s'
                      % _esc(g['form_failed'])))
+    if g.get('porosity_unreached'):
+        rows.append(('', '<b>%.0f %% cannot be reached</b> - %s'
+                     % (100.0 * p['porosity'], _esc(unreached_why(p, g)))))
     return rows
+
+
+UNREACHED = ('even the largest cells leave more solid than that: the struts are too '
+             'thick for the region%s. This is the closest. Use thinner struts%s.')
 
 
 # --------------------------------------------------------------------------- #
@@ -930,6 +937,12 @@ def build(app, ui, reg, p):
     return body, res
 
 
+def unreached_why(p, g):
+    border = p['kind'] == 'surface' and p.get('border') and g.get('border_struts')
+    return UNREACHED % (' and its border strut' if border else '',
+                        ' or turn the border strut off' if border else '')
+
+
 def report(p, res):
     g = res['graph']
     what = {'volume': 'Volume', 'surface': 'Surface'}[p['kind']]
@@ -964,6 +977,9 @@ def report(p, res):
                      '%d OPEN OR NON-MANIFOLD EDGES' % m['open_or_nonmanifold_edges']),
                   '%d connected piece%s.' % (m['components'],
                                              '' if m['components'] == 1 else 's')]
+    if g.get('porosity_unreached'):
+        lines.append('WARNING: %.1f %% cannot be reached - %s'
+                     % (p['porosity'] * 100.0, unreached_why(p, g)))
     if g.get('dropped_groups'):
         lines.append('%d loose strut groups removed.' % g['dropped_groups'])
     rm = res.get('region', {}).get('remesh') or {}
@@ -1275,7 +1291,62 @@ def dev_dump_region(app, job):
     return _in_scratch(app, job, run)
 
 
+def _active_bodies(app):
+    des = adsk.fusion.Design.cast(app.activeProduct)
+    out = []
+    for comp in des.allComponents:
+        for coll in (comp.bRepBodies, comp.meshBodies):
+            for b in coll:
+                out.append(b)
+    return out
+
+
+def dev_bodies(app, job):
+    """The active document's bodies - read only."""
+    out = []
+    for b in _active_bodies(app):
+        mb = adsk.fusion.MeshBody.cast(b)
+        out.append({'name': b.name, 'component': b.parentComponent.name,
+                    'mesh': bool(mb), 'visible': b.isVisible,
+                    'closed': bool(mb.isClosed) if mb else bool(b.isSolid),
+                    'triangles': mb.mesh.triangleCount if mb else None})
+    return {'document': app.activeDocument.name, 'bodies': out}
+
+
+def dev_engine_on(app, job):
+    """Run the engine on a body of the ACTIVE document exactly as the dialog
+    would (read_region, write_region, run_engine) - and import nothing, so a
+    case document is only read."""
+    body = next((b for b in _active_bodies(app) if b.name == job['body']), None)
+    if body is None:
+        return {'error': 'no body %r' % job['body']}
+    reg = read_region([body])
+    st = load_settings()
+    p = dict(kind='volume' if reg['closed'] else 'surface',
+             placement=PLACES[st['place']][0], flip=bool(st['flip']),
+             skin=bool(st['skin']), border=bool(st['border']),
+             define=DEFINE[st['define']][0], porosity=st['porosity'] / 100.0,
+             cell=st['cell'], thickness=st['thickness'], regularity=st['regularity'],
+             seed=st['seed'], resolution=RESOLUTIONS[st['resolution']][0],
+             max_tris=st['max_ktris'] * 1000, closed=reg['closed'],
+             organic=st['organic'], output=OUTPUTS[st['output']][0],
+             remesh=REMESH[st['remesh']][0], remesh_edge=st['remesh_edge'])
+    p.update(job.get('params', {}))
+    t0 = time.time()
+    res = run_engine(build_job(reg, p, job.get('mode', 'mesh')))
+    out = {'region': {k: reg[k] for k in ('closed', 'what', 'area', 'volume')},
+           'params': p, 'secs': round(time.time() - t0, 1)}
+    if job.get('mode', 'mesh') == 'graph':
+        out['rows'] = preview_rows(p, res)
+        out['graph'] = {k: v for k, v in res['graph'].items() if k != 'cage'}
+    else:
+        out['text'] = report(p, res)
+    return out
+
+
 DEV_COMMANDS = {
+    'bodies': dev_bodies,
+    'engine_on': dev_engine_on,
     'dump_region': dev_dump_region,
     'tsm': dev_tsm,
     'ping': dev_ping,
