@@ -398,10 +398,58 @@ def test_errors():
     check('the graph is cached between preview and build', r['graph'].get('cached'))
 
 
+def test_cubic():
+    print('cubic lattice')
+    for phi in (0.7, 0.8, 0.9):
+        s = P.cell_for('volume', phi, 0.65, 'cubic')
+        r = 0.325
+        exact = 1.0 - (3 * math.pi * r * r * s - 8 * math.sqrt(2) * r ** 3) / s ** 3
+        check('cubic model at %.0f %% is the exact cell' % (100 * phi),
+              abs(exact - phi) < 1e-6, round(s, 4))
+    # one cell's struts as a mesh: the union of three orthogonal cylinders
+    s = 2.0
+    cyl = [trimesh.creation.cylinder(0.325, s + 0.002, sections=128) for _ in range(3)]
+    cyl[1].apply_transform(trimesh.transformations.rotation_matrix(math.pi / 2, [1, 0, 0]))
+    cyl[2].apply_transform(trimesh.transformations.rotation_matrix(math.pi / 2, [0, 1, 0]))
+    try:
+        u = trimesh.boolean.union(cyl, engine='manifold')
+        model = 1.0 - P.porosity_of('volume', s, 0.65, 'cubic')
+        check('three crossed struts match the model volume',
+              abs(u.volume - model * s ** 3) < 0.01 * u.volume,
+              (round(float(u.volume), 4), round(model * s ** 3, 4)))
+    except Exception as exc:                                  # no boolean engine
+        check('boolean engine for the cubic cell check', False, exc)
+    box = trimesh.creation.box((20, 20, 20))
+    for skin in (False, True):
+        r = E.run(job('cubic_box_%d' % skin, box, cell_type='cubic', thickness=0.65,
+                      porosity=0.8, skin=skin, organic=1))
+        g = r['graph']
+        check('cubic box skin=%s: the unit cell is the 80 %% one' % skin,
+              abs(g['porosity_unit_cell'] - 0.8) < 1e-6
+              and abs(g['cell_mm'] - P.cell_for('volume', 0.8, 0.65, 'cubic')) < 1e-9,
+              round(g['cell_mm'], 4))
+        check('cubic box skin=%s: the trimmed part measures within 4 points' % skin,
+              abs(r['porosity_measured'] - 0.8) < 0.04,
+              '%.2f %%' % (100 * r['porosity_measured']))
+        check('cubic box skin=%s: watertight, one piece' % skin,
+              r['mesh']['open_or_nonmanifold_edges'] == 0 and r['mesh']['components'] == 1,
+              (r['mesh']['open_or_nonmanifold_edges'], r['mesh']['components']))
+    g = E.run(job('cubic_graph', box, cell_type='cubic', thickness=0.65, porosity=0.8,
+                  skin=False, mode='graph'))['graph']
+    check('cubic graph: struts along X, Y and Z only', g['struts'] > 1000, g['struts'])
+    sheet, N = curved_sheet()
+    r = E.run(job('cubic_sheet', sheet, normals=N, kind='surface', closed=False,
+                  cell_type='cubic', thickness=0.65, porosity=0.6))
+    check('cubic surface lattice: watertight, porosity reported',
+          r['mesh']['open_or_nonmanifold_edges'] == 0 and 0.3 < r['porosity_measured'] < 0.9,
+          '%.2f %%' % (100 * r['porosity_measured']))
+
+
 def main():
     test_plan()
     test_strut_volume()
     test_volume()
+    test_cubic()
     test_surface()
     test_refine()
     test_thin_wall()

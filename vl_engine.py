@@ -256,7 +256,8 @@ def remesh_target(job, R):
         d = float(job['thickness'])
         try:
             s = (float(job['cell']) if job.get('define', 'porosity') == 'cell'
-                 else P.cell_for(job['kind'], float(job['porosity']), d))
+                 else P.cell_for(job['kind'], float(job['porosity']), d,
+                                 job.get('cell_type', 'voronoi')))
         except P.PlanError:
             s = 4.0 * d
         want = min(REMESH_MAX_EDGE_MM, 0.5 * s)
@@ -561,6 +562,108 @@ def restricted_network(V, F, Vn, seeds, lab):
     return Xall, Nall, is_j, E, ukey
 
 
+def grid_network(V, F, Vn, s, center):
+    """The cubic counterpart of restricted_network: the surface cut by the
+    planes of a grid of pitch s through center. A vertex is labelled by its
+    grid cell; an edge between two cells crosses the plane between them, and a
+    triangle touching three cells is pierced by a grid line - a junction."""
+    nV = len(V)
+    ijk = np.floor((V - center) / s).astype(np.int64)
+    m0 = ijk.min(0)
+    span = ijk.max(0) - m0 + 1
+    lab = ((ijk[:, 0] - m0[0]) * span[1] + (ijk[:, 1] - m0[1])) * span[2] + (ijk[:, 2] - m0[2])
+    la = lab[F]
+    ea = F[:, [0, 1, 2]]
+    eb = F[:, [1, 2, 0]]
+    cross = la[:, [0, 1, 2]] != la[:, [1, 2, 0]]
+    t_idx, e_idx = np.nonzero(cross)
+    if len(t_idx) == 0:
+        return (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0, bool),
+                np.zeros((0, 2), int), np.zeros(0, np.int64))
+    a = ea[t_idx, e_idx]
+    b = eb[t_idx, e_idx]
+    key = np.minimum(a, b).astype(np.int64) * nV + np.maximum(a, b)
+    ukey, inv = np.unique(key, return_inverse=True)
+    ua, ub = ukey // nV, ukey % nV
+    ia, ib = ijk[ua], ijk[ub]
+    r = np.arange(len(ua))
+    k = np.argmax(ia != ib, axis=1)
+    plane = center[k] + s * np.maximum(ia[r, k], ib[r, k])
+    va, vb = V[ua, k], V[ub, k]
+    den = vb - va
+    t = np.where(np.abs(den) > 1e-30, (plane - va) / np.where(den == 0, 1, den), 0.5)
+    t = np.clip(t, 0.0, 1.0)[:, None]
+    X = V[ua] + t * (V[ub] - V[ua])
+    Nn = Vn[ua] + t * (Vn[ub] - Vn[ua])
+    node = np.full(cross.shape, -1, np.int64)
+    node[t_idx, e_idx] = inv.reshape(-1)
+
+    ncross = cross.sum(1)
+    two = np.nonzero(ncross == 2)[0]
+    E2 = np.sort(node[two], axis=1)[:, 1:]
+
+    three = np.nonzero(ncross == 3)[0]
+    nj = len(three)
+    T = F[three]
+    J = X[node[three]].mean(1) if nj else np.zeros((0, 3))
+    if nj:
+        # the grid line: the two axes along which the three cells differ
+        c3 = ijk[T]
+        varies = c3.max(1) != c3.min(1)
+        two_ax = varies.sum(1) == 2
+        if two_ax.any():
+            tn, _ = tri_normals(V, T[two_ax])
+            ax = np.argsort(~varies[two_ax], axis=1, kind='stable')[:, :2]
+            rr = np.arange(len(ax))
+            M = np.zeros((len(ax), 3, 3))
+            M[rr, 0, ax[:, 0]] = 1.0
+            M[rr, 1, ax[:, 1]] = 1.0
+            M[:, 2] = tn
+            cmax = c3[two_ax].max(1)
+            rhs = np.stack([center[ax[:, 0]] + s * cmax[rr, ax[:, 0]],
+                            center[ax[:, 1]] + s * cmax[rr, ax[:, 1]],
+                            np.einsum('ij,ij->i', tn, V[T[two_ax, 0]])], 1)
+            det = np.linalg.det(M)
+            good = np.abs(det) > 1e-9
+            Jt = J[two_ax]
+            if good.any():
+                Jt[good] = np.linalg.solve(M[good], rhs[good][..., None])[..., 0]
+            J[two_ax] = Jt
+        cen = V[T].mean(1)
+        span_t = np.linalg.norm(V[T] - cen[:, None], axis=2).max(1)
+        far = np.linalg.norm(J - cen, axis=1) > 1.5 * span_t
+        J[far] = X[node[three]].mean(1)[far]
+    Jn = Vn[T].mean(1) if nj else np.zeros((0, 3))
+    base = len(X)
+    jid = base + np.arange(nj)
+    E3 = np.vstack([np.stack([jid, node[three, q]], 1) for q in range(3)]) if nj \
+        else np.zeros((0, 2), np.int64)
+    Xall = np.vstack([X, J])
+    Nall = np.vstack([Nn, Jn])
+    Nall /= np.maximum(np.linalg.norm(Nall, axis=1), 1e-30)[:, None]
+    is_j = np.zeros(len(Xall), bool)
+    is_j[base:] = True
+    E = np.vstack([E2, E3]).astype(np.int64)
+    return Xall, Nall, is_j, E, ukey
+
+
+def cubic_edges(lo, hi, s, center):
+    """Nodes and edges of a cubic grid of pitch s through center, one pitch
+    beyond [lo, hi] on every side so every edge that matters is whole."""
+    axes = []
+    for k in range(3):
+        i0 = int(math.floor((lo[k] - center[k]) / s)) - 1
+        i1 = int(math.ceil((hi[k] - center[k]) / s)) + 1
+        axes.append(center[k] + s * np.arange(i0, i1 + 1))
+    n = [len(a) for a in axes]
+    nodes = np.stack(np.meshgrid(*axes, indexing='ij'), -1).reshape(-1, 3)
+    idx = np.arange(len(nodes)).reshape(n)
+    E = np.vstack([np.column_stack([idx[:-1].ravel(), idx[1:].ravel()]),
+                   np.column_stack([idx[:, :-1].ravel(), idx[:, 1:].ravel()]),
+                   np.column_stack([idx[:, :, :-1].ravel(), idx[:, :, 1:].ravel()])])
+    return nodes, E
+
+
 def border_segments(V, Vn, paths, ukey, X, Nn, tol, shift):
     """The border strut, THROUGH the points where the cell net meets the
     boundary: those are crossing nodes on boundary edges, so inserting them
@@ -751,6 +854,10 @@ def build_graph(R, job, s, rng_seed):
     tol = min(0.1 * r, 0.05 * s)
     info = {'cell_mm': s, 'trace_edge_mm': edge}
     parts_A, parts_B = [], []
+    # a cubic grid is centred on the region, along the design's X, Y, Z
+    cubic = job.get('cell_type', 'voronoi') == 'cubic'
+    center = 0.5 * (V.min(0) + V.max(0))
+    info['cell_type'] = 'cubic' if cubic else 'voronoi'
 
     if kind == 'volume':
         if '_sdf' not in R:
@@ -761,18 +868,25 @@ def build_graph(R, job, s, rng_seed):
             return sdf(X) - shift
 
         lo, hi = V.min(0) - abs(shift), V.max(0) + abs(shift)
-        env = P.envelope('volume', job['placement'], d, R['volume'], R['area'])
-        n = max(4, int(round(env / s ** 3)))
-        Xs = cached_volume_samples(R, phi, shift, lo, hi,
-                                   min(max(30 * n, 30000), 3_000_000), rng)
-        seeds = Xs[rng.choice(len(Xs), min(n, len(Xs)), replace=False)]
-        seeds, _ = lloyd(seeds, Xs, iters)
-        Vv, E = voronoi_edges(seeds, lo, hi, s)
+        if cubic:
+            Vv, E = cubic_edges(lo, hi, s, center)
+            info['grid_nodes'] = len(Vv)
+        else:
+            env = P.envelope('volume', job['placement'], d, R['volume'], R['area'])
+            n = max(4, int(round(env / s ** 3)))
+            Xs = cached_volume_samples(R, phi, shift, lo, hi,
+                                       min(max(30 * n, 30000), 3_000_000), rng)
+            seeds = Xs[rng.choice(len(Xs), min(n, len(Xs)), replace=False)]
+            seeds, _ = lloyd(seeds, Xs, iters)
+            Vv, E = voronoi_edges(seeds, lo, hi, s)
+            info['seeds'] = len(seeds)
         A, B, ends = clip_edges(Vv, E, phi)
-        info['seeds'] = len(seeds)
         if job.get('skin', True):
-            lab = nearest_seed(Vf, seeds)
-            X, Nn, is_j, Es, _ = restricted_network(Vf, Ff, Vn, seeds, lab)
+            if cubic:
+                X, Nn, is_j, Es, _ = grid_network(Vf, Ff, Vn, s, center)
+            else:
+                lab = nearest_seed(Vf, seeds)
+                X, Nn, is_j, Es, _ = restricted_network(Vf, Ff, Vn, seeds, lab)
             paths, _ = chains(len(X), Es)
             sA, sB = polyline_segments(X, Nn, paths, tol, shift)
             # a clipped edge leaves the volume at a triple point of the skin;
@@ -788,17 +902,20 @@ def build_graph(R, job, s, rng_seed):
         parts_A.insert(0, A)
         parts_B.insert(0, B)
     else:
-        n = max(3, int(round(R['area'] / s ** 2)))
-        Xs, Xn = surface_samples(Vf, Ff, Vn, min(max(40 * n, 40000), 3_000_000), rng)
-        pick = rng.choice(len(Xs), min(n, len(Xs)), replace=False)
-        seeds, Sn = lloyd(Xs[pick], Xs, iters, Xn, Xn[pick])
-        lab = nearest_seed(Vf, seeds, Vn, Sn)
-        X, Nn, is_j, Es, ukey = restricted_network(Vf, Ff, Vn, seeds, lab)
+        if cubic:
+            X, Nn, is_j, Es, ukey = grid_network(Vf, Ff, Vn, s, center)
+        else:
+            n = max(3, int(round(R['area'] / s ** 2)))
+            Xs, Xn = surface_samples(Vf, Ff, Vn, min(max(40 * n, 40000), 3_000_000), rng)
+            pick = rng.choice(len(Xs), min(n, len(Xs)), replace=False)
+            seeds, Sn = lloyd(Xs[pick], Xs, iters, Xn, Xn[pick])
+            lab = nearest_seed(Vf, seeds, Vn, Sn)
+            X, Nn, is_j, Es, ukey = restricted_network(Vf, Ff, Vn, seeds, lab)
+            info['seeds'] = len(seeds)
         paths, _ = chains(len(X), Es)
         A, B = polyline_segments(X, Nn, paths, tol, shift)
         parts_A.append(A)
         parts_B.append(B)
-        info['seeds'] = len(seeds)
         if not R['closed'] and job.get('border', True):
             bA, bB = border_segments(Vf, Vn, border_paths(Vf, Ff), ukey, X, Nn,
                                      tol, shift)
@@ -884,7 +1001,14 @@ def graph_for(job, R, log=None, measure=None):
     output = job.get('output', 'mesh')
     fallback = None
     by_cell = job.get('define', 'porosity') == 'cell'
-    s = float(job['cell']) if by_cell else P.cell_for(kind, float(job['porosity']), d)
+    s = float(job['cell']) if by_cell else P.cell_for(kind, float(job['porosity']), d,
+                                                      job.get('cell_type', 'voronoi'))
+    # A regular lattice's porosity is its unit cell's: the papers' "80 %" is the
+    # cell, and a trimmed part's own figure jumps with how many planes fit (a 20 mm
+    # box: 75.6 % or 82.8 %, nothing between). So the cell is solved exactly from
+    # the model and built once; the part's measured porosity is still reported.
+    if job.get('cell_type', 'voronoi') == 'cubic':
+        by_cell = True
     want, _ = target_solid(job, R)
     best = None
     hist = []
@@ -909,6 +1033,8 @@ def graph_for(job, R, log=None, measure=None):
             output = 'mesh'
             log('No Form possible - building a mesh: %s' % fallback)
             vol, extra = M.volume(A, B, output)
+        if job.get('cell_type', 'voronoi') == 'cubic':
+            info['porosity_unit_cell'] = P.porosity_of(kind, s, d, 'cubic')
         info.update({'iterations': it + 1, 'output': output,
                      'volume_predicted_mm3': vol,
                      'porosity_predicted': porosity_from(job, R, vol)})
@@ -1311,7 +1437,7 @@ def write_stl(surf, path):
 # job
 # --------------------------------------------------------------------------- #
 
-GRAPH_KEYS = ('kind', 'placement', 'flip', 'skin', 'border', 'define', 'porosity',
+GRAPH_KEYS = ('kind', 'cell_type', 'placement', 'flip', 'skin', 'border', 'define', 'porosity',
               'cell', 'thickness', 'regularity', 'seed', 'closed', 'organic',
               'output', 'resolution', 'remesh', 'remesh_edge')
 
@@ -1347,6 +1473,8 @@ def validate(job):
         raise LatticeError('strut thickness must be positive')
     if job['kind'] not in ('volume', 'surface'):
         raise LatticeError('choose a volume or a surface lattice')
+    if job.get('cell_type', 'voronoi') not in P.CELL_TYPES:
+        raise LatticeError('the cell must be voronoi or cubic')
     if job['kind'] == 'volume' and not job.get('closed'):
         raise LatticeError('a volume lattice needs a closed region')
     if job['placement'] not in P.PLACEMENTS:

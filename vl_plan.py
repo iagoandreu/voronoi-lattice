@@ -40,6 +40,9 @@ C_SURF = 1.87
 J_SURF = 1.9
 BETA = {'volume': 5.1, 'surface': 2.0}
 
+CUBIC = {'volume': (3.0, 1.0, 8.0 * math.sqrt(2.0)), 'surface': (2.0, 1.0, 16.0 / 3.0)}
+CELL_TYPES = ('voronoi', 'cubic')
+
 PLACEMENTS = ('flush', 'middle', 'external')
 RESOLUTION = {'coarse': 3.0, 'medium': 4.0, 'fine': 6.0}  # voxels per diameter
 MAX_VOXELS_SLAB = 24_000_000
@@ -71,21 +74,26 @@ def envelope(kind, placement, d, volume, area):
     return area
 
 
-def solid_fraction(kind, s, d):
+def solid_fraction(kind, s, d, cell_type='voronoi'):
     """Strut volume over envelope volume (volume lattice), or covered area over
     surface area (surface lattice), for cell size s."""
     r = 0.5 * d
+    if cell_type == 'cubic':
+        c, j, beta = CUBIC[kind]
+        if kind == 'volume':
+            return (math.pi * r * r * c * s - beta * r ** 3 * j) / s ** 3
+        return 4.0 * (math.pi * r * r * c * s - beta * r ** 3 * j) / (math.pi * d * s * s)
     if kind == 'volume':
         return math.pi * r * r * C_VOL / s ** 2 - BETA['volume'] * r ** 3 * J_VOL / s ** 3
     vol_per_area = math.pi * r * r * C_SURF / s - BETA['surface'] * r ** 3 * J_SURF / s ** 2
     return 4.0 * vol_per_area / (math.pi * d)
 
 
-def porosity_of(kind, s, d):
-    return 1.0 - solid_fraction(kind, s, d)
+def porosity_of(kind, s, d, cell_type='voronoi'):
+    return 1.0 - solid_fraction(kind, s, d, cell_type)
 
 
-def cell_for(kind, porosity, d):
+def cell_for(kind, porosity, d, cell_type='voronoi'):
     """Cell size giving this porosity. The overlap term makes the model's solid
     fraction peak and then fall as cells shrink below a few strut widths, where
     the model stops meaning anything; above that peak it falls monotonically
@@ -93,29 +101,32 @@ def cell_for(kind, porosity, d):
     if not 0.0 < porosity < 1.0:
         raise PlanError('porosity must be between 0 and 100 %')
     grid = [d * 1.02 ** k for k in range(400)]
-    lo = max(grid, key=lambda s: solid_fraction(kind, s, d))
+    if cell_type == 'cubic':
+        grid = [g for g in grid if g > d]      # the model holds while d < s
+    lo = max(grid, key=lambda s: solid_fraction(kind, s, d, cell_type))
     hi = 1000.0 * d
-    if porosity_of(kind, lo, d) > porosity:
+    if porosity_of(kind, lo, d, cell_type) > porosity:
         raise PlanError('%.0f %% porosity is too low for %.3g mm struts - the '
                         'cells would close up' % (porosity * 100.0, d))
     for _ in range(80):
         mid = 0.5 * (lo + hi)
-        if porosity_of(kind, mid, d) < porosity:
+        if porosity_of(kind, mid, d, cell_type) < porosity:
             lo = mid
         else:
             hi = mid
     return 0.5 * (lo + hi)
 
 
-def estimate(kind, s, d, volume, area, placement, resolution='medium'):
+def estimate(kind, s, d, volume, area, placement, resolution='medium',
+             cell_type='voronoi'):
     """Rough cost of a run, for the dialog: cells, strut length, triangles."""
     env = envelope(kind, placement, d, volume, area)
     if kind == 'volume':
         cells = env / s ** 3
-        length = C_VOL * env / s ** 2
+        length = (CUBIC['volume'][0] if cell_type == 'cubic' else C_VOL) * env / s ** 2
     else:
         cells = area / s ** 2
-        length = C_SURF * area / s
+        length = (CUBIC['surface'][0] if cell_type == 'cubic' else C_SURF) * area / s
     h = d / RESOLUTION[resolution]
     skin = 2.0 * math.pi * 0.5 * d * length
     tris = 2.2 * skin / (h * h)
