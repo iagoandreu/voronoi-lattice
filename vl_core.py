@@ -47,7 +47,7 @@ WORK = os.path.join(ADDIN_DIR, 'work')
 
 CMD_ID = 'VoronoiLatticeCreate'
 CMD_NAME = 'Voronoi Lattice'
-VERSION = '0.3.0'
+VERSION = '0.4.0'
 
 CM = 10.0          # internal cm -> mm
 MM = 0.1           # mm -> internal cm
@@ -62,29 +62,42 @@ PLACES = [('flush', 'Flush - inside the surface'),
           ('external', 'External - outside the surface')]
 DEFINE = [('porosity', 'Porosity'), ('cell', 'Cell size')]
 CELL_TYPES = [('voronoi', 'Voronoi - irregular foam'),
-              ('cubic', 'Cubic - struts along X, Y, Z')]
+              ('cubic', 'Cubic - regular grid of struts')]
+ORIENTS = [('design', 'Design X, Y, Z'), ('axis', 'Along an edge or axis')]
+ALIGNS = [('diagonal', 'Opposite cell corners on the axis'),
+          ('edge', 'A cell edge on the axis')]
 
 # Published parameter sets. ITC (Instituto Tecnologico de Canarias, the design
 # and EBM side of Osteobionix) characterised cubic Ti6Al4V-ELI lattices, Arcam
 # EBM: struts ~0.65 mm at 70 / 80 / 90 % design porosity, measured by weighing at
 # 69.9 / 78.9 / 89.3 % (Yanez, Cuadrado, Martel, ULPGC-ITC 2018, accedaCRIS
-# 10553/106776; WCB 2018 poster 10553/106775). The cell size is not published:
-# it is solved here for the porosity with the exact cubic model.
+# 10553/106776; WCB 2018 poster 10553/106775). The cell size is not published
+# there; Donato Monopoli (ITC) told us 1 mm cells (2026-11). A 1 mm cell and a
+# 0.65 mm strut make a 39 % unit cell (pores 0.35 mm), far from 70-90 %, so the
+# readings are kept apart until it is confirmed: a 1 mm cell with 0.65 mm
+# struts, a 1 mm PORE with 0.65 mm struts (cell 1.65 mm, 72 %), a 1 mm cell at
+# 80 % (struts 0.325 mm), and the papers' porosity sets with the cell solved.
+_ITC = {'cell_type': 1, 'organic': 1, 'output': 1, 'place': 0}
 PRESETS = [
     ('custom', 'Custom', None),
-    ('itc80', 'ITC / Osteobionix - cubic, 0.65 mm, 80 %',
-     {'cell_type': 1, 'define': 0, 'porosity': 80.0, 'thickness': 0.65,
-      'organic': 1, 'output': 1, 'place': 0}),
-    ('itc70', 'ITC / Osteobionix - cubic, 0.65 mm, 70 %',
-     {'cell_type': 1, 'define': 0, 'porosity': 70.0, 'thickness': 0.65,
-      'organic': 1, 'output': 1, 'place': 0}),
-    ('itc90', 'ITC / Osteobionix - cubic, 0.65 mm, 90 %',
-     {'cell_type': 1, 'define': 0, 'porosity': 90.0, 'thickness': 0.65,
-      'organic': 1, 'output': 1, 'place': 0}),
+    ('itc_c1', 'ITC / Osteobionix - cubic, cell 1 mm, strut 0.65 mm',
+     dict(_ITC, define=1, cell=1.0, thickness=0.65)),
+    ('itc_p1', 'ITC / Osteobionix - cubic, pore 1 mm, strut 0.65 mm',
+     dict(_ITC, define=1, cell=1.65, thickness=0.65)),
+    ('itc_c1_80', 'ITC / Osteobionix - cubic, cell 1 mm, 80 %',
+     dict(_ITC, define=1, cell=1.0, thickness=0.3247)),
+    ('itc80', 'ITC 2018 papers - cubic, strut 0.65 mm, 80 %',
+     dict(_ITC, define=0, porosity=80.0, thickness=0.65)),
+    ('itc70', 'ITC 2018 papers - cubic, strut 0.65 mm, 70 %',
+     dict(_ITC, define=0, porosity=70.0, thickness=0.65)),
+    ('itc90', 'ITC 2018 papers - cubic, strut 0.65 mm, 90 %',
+     dict(_ITC, define=0, porosity=90.0, thickness=0.65)),
 ]
-PRESET_SOURCE = ('Yanez, Cuadrado, Martel (ULPGC / ITC) 2018: cubic Ti6Al4V-ELI, '
-                 'Arcam EBM, struts ~0.65 mm; design 70 / 80 / 90 % measured '
-                 '69.9 / 78.9 / 89.3 %. Cell size not published - solved here.')
+PRESET_SOURCE = ('Cell 1 mm: Donato Monopoli (ITC), 2026-11. Struts ~0.65 mm and '
+                 'design 70 / 80 / 90 % (measured 69.9 / 78.9 / 89.3 %): Yanez, '
+                 'Cuadrado, Martel (ULPGC / ITC) 2018, cubic Ti6Al4V-ELI, Arcam EBM. '
+                 'A 1 mm cell with 0.65 mm struts is a 39 % cell, so "1 mm" may be '
+                 'the pore: both readings are listed.')
 OUTPUTS = [('form', 'Form (T-spline body)'), ('mesh', 'Mesh body')]
 RESOLUTIONS = [('coarse', 'Coarse (3 voxels per strut)'),
                ('medium', 'Medium (4 voxels per strut)'),
@@ -94,7 +107,7 @@ REMESH = [('auto', 'Automatic - long edges or slivers'),
           ('off', 'Never')]
 
 DEFAULTS = {
-    'preset': 1, 'cell_type': 1,
+    'preset': 1, 'cell_type': 1, 'orient': 0, 'align': 0, 'spin': 0.0,
     'place': 0, 'flip': False, 'skin': True, 'border': True, 'define': 0,
     'porosity': 80.0, 'cell': 3.0, 'thickness': 0.6, 'regularity': 5, 'seed': 1,
     'resolution': 1, 'max_ktris': 1500, 'replace': True, 'hide': True,
@@ -384,7 +397,61 @@ def params_from(inputs, reg):
         'output': _drop(inputs, 'output', OUTPUTS),
         'remesh': _drop(inputs, 'remesh', REMESH),
         'remesh_edge': _item(inputs, 'remesh_edge').value * CM,
+        'orient': orient_from(inputs, reg),
     }
+
+
+def axis_of(e):
+    """(point, direction) in model space, cm, of a straight edge, sketch line,
+    construction axis or cylindrical face."""
+    ed = adsk.fusion.BRepEdge.cast(e)
+    if ed:
+        g = adsk.core.Line3D.cast(ed.geometry)
+        if g:
+            return g.startPoint, g.startPoint.vectorTo(g.endPoint)
+    sl = adsk.fusion.SketchLine.cast(e)
+    if sl:
+        g = sl.worldGeometry
+        return g.startPoint, g.startPoint.vectorTo(g.endPoint)
+    ca = adsk.fusion.ConstructionAxis.cast(e)
+    if ca:
+        g = ca.geometry
+        return g.origin, g.direction
+    f = adsk.fusion.BRepFace.cast(e)
+    if f:
+        g = adsk.core.Cylinder.cast(f.geometry)
+        if g:
+            return g.origin, g.axis
+    raise ValueError('The axis must be a straight edge, a sketch line, a construction '
+                     'axis or a cylindrical face.')
+
+
+def orient_from(inputs, reg):
+    """The picked axis in the region's own component space, mm - where the
+    engine works - or None for the design axes."""
+    if _drop(inputs, 'cell_type', CELL_TYPES) != 'cubic' or \
+            _drop(inputs, 'orient', ORIENTS) != 'axis':
+        return None
+    picks = selected(_item(inputs, 'axis'))
+    if not picks:
+        return {'missing': True}
+    point, direction = axis_in(picks[0], reg.get('context') if reg else None)
+    return {'point': point, 'dir': direction, 'align': _drop(inputs, 'align', ALIGNS),
+            'spin_deg': math.degrees(_item(inputs, 'spin').value)}
+
+
+def axis_in(entity, ctx):
+    """An axis entity's (point mm, unit direction) in the space of the
+    occurrence ctx (None: the root)."""
+    p, v = axis_of(entity)
+    p, v = p.copy(), v.copy()
+    if ctx is not None:
+        inv = ctx.transform2.copy()
+        inv.invert()
+        p.transformBy(inv)
+        v.transformBy(inv)
+    v.normalize()
+    return [p.x * CM, p.y * CM, p.z * CM], [v.x, v.y, v.z]
 
 
 def settings_from(inputs):
@@ -405,6 +472,8 @@ def settings_from(inputs):
         'preview': _item(inputs, 'preview').value,
         'organic': int(_item(inputs, 'organic').valueOne), 'output': idx('output'),
         'remesh': idx('remesh'), 'remesh_edge': _item(inputs, 'remesh_edge').value * CM,
+        'orient': idx('orient'), 'align': idx('align'),
+        'spin': math.degrees(_item(inputs, 'spin').value),
     }
 
 
@@ -415,6 +484,8 @@ def check_params(p):
                          'lattice.')
     if p['thickness'] <= 0:
         raise ValueError('The strut thickness must be positive.')
+    if p.get('orient') and p['orient'].get('missing'):
+        raise ValueError('Pick the edge or axis the grid is turned onto.')
     if p['define'] == 'cell':
         if p['cell'] <= p['thickness']:
             raise ValueError('The cell size must be larger than the strut '
@@ -474,9 +545,28 @@ def on_created(app, cmd):
     for i, (_k, lab) in enumerate(CELL_TYPES):
         ct.listItems.add(lab, i == int(s.get('cell_type', 0)))
     ct.tooltip = ('Voronoi: an irregular foam traced from relaxed random seeds. '
-                  'Cubic: a regular grid of struts along the design X, Y and Z, '
-                  'centred on the region - its porosity is the unit cell\'s, solved '
-                  'exactly.')
+                  'Cubic: a regular grid of struts - its porosity is the unit '
+                  'cell\'s, solved exactly.')
+    orr = gi.addDropDownCommandInput('orient', 'Grid orientation', tl)
+    for i, (_k, lab) in enumerate(ORIENTS):
+        orr.listItems.add(lab, i == int(s.get('orient', 0)))
+    orr.tooltip = ('Design X, Y, Z: struts along the design axes, a node at the '
+                   'centre of the region. Along an edge or axis: the grid is turned '
+                   'onto a picked straight edge, sketch line, construction axis or '
+                   'cylinder axis, with a node on that line.')
+    ax = gi.addSelectionInput('axis', 'Axis', 'A straight edge, sketch line, '
+                              'construction axis or cylindrical face')
+    for f in ('LinearEdges', 'SketchLines', 'ConstructionLines', 'CylindricalFaces'):
+        ax.addSelectionFilter(f)
+    ax.setSelectionLimits(0, 1)
+    al = gi.addDropDownCommandInput('align', 'Align', tl)
+    for i, (_k, lab) in enumerate(ALIGNS):
+        al.listItems.add(lab, i == int(s.get('align', 0)))
+    al.tooltip = ('Opposite cell corners: the axis runs along the cell diagonal, '
+                  'through two opposite vertices of every cell it crosses. A cell '
+                  'edge: one strut direction lies along the axis.')
+    gi.addValueInput('spin', 'Spin about the axis', 'deg',
+                     rl(math.radians(float(s.get('spin', 0.0)))))
     kd = gi.addDropDownCommandInput('kind', 'Lattice', tl)
     for i, (_k, lab) in enumerate(KINDS):
         kd.listItems.add(lab, i == 0)
@@ -596,6 +686,10 @@ def refresh(inputs):
     _item(inputs, 'cell').isVisible = cell
     _item(inputs, 'gMesh').isVisible = _drop(inputs, 'output', OUTPUTS) == 'mesh'
     voronoi = _drop(inputs, 'cell_type', CELL_TYPES) == 'voronoi'
+    along = not voronoi and _drop(inputs, 'orient', ORIENTS) == 'axis'
+    _item(inputs, 'orient').isVisible = not voronoi
+    for iid in ('axis', 'align', 'spin'):
+        _item(inputs, iid).isVisible = along
     _item(inputs, 'regularity').isVisible = voronoi
     _item(inputs, 'seed').isVisible = voronoi
     _item(inputs, 'info').formattedText = describe(inputs)
@@ -633,6 +727,11 @@ def describe(inputs):
     if ct == 'cubic':
         pairs.append(('porosity', '%.1f %% in the unit cell; the trimmed part is '
                       'measured after the build' % (phi * 100.0)))
+        o = p.get('orient')
+        pairs.append(('grid', 'design X, Y, Z, a node at the centre' if not o else
+                      '%s along the axis, spun %.1f&deg;, a node on it'
+                      % ('cell diagonal' if o['align'] == 'diagonal' else 'cell edge',
+                         o['spin_deg'])))
     elif p['define'] == 'cell':
         pairs.append(('porosity', 'about %.1f %%' % (phi * 100.0)))
     pairs.append(('cells', 'about %d, %.0f mm of strut' % (round(est['cells']),
@@ -660,8 +759,8 @@ def describe(inputs):
     return _rows(pairs)
 
 
-PRESET_INPUTS = ('cell_type', 'define', 'porosity', 'thickness', 'organic', 'output',
-                 'place')
+PRESET_INPUTS = ('cell_type', 'define', 'porosity', 'cell', 'thickness', 'organic',
+                 'output', 'place')
 
 
 def apply_preset(inputs, values):
@@ -672,7 +771,7 @@ def apply_preset(inputs, values):
             it = _item(inputs, k)
             if k in ('porosity',):
                 it.value = float(v)
-            elif k == 'thickness':
+            elif k in ('thickness', 'cell'):
                 it.value = float(v) * MM
             elif k == 'organic':
                 it.valueOne = int(v)
@@ -687,7 +786,7 @@ def preset_matches(inputs, values):
         it = _item(inputs, k)
         if k == 'porosity':
             cur = it.value
-        elif k == 'thickness':
+        elif k in ('thickness', 'cell'):
             cur = it.value * CM
         elif k == 'organic':
             cur = it.valueOne
@@ -1059,6 +1158,11 @@ def report(p, res):
              '',
              'Cell size %.3f mm, strut %.3f mm, %d struts (%.0f mm).'
              % (g['cell_mm'], p['thickness'], g['struts'], g['length_mm'])]
+    if cubic and p.get('orient'):
+        o = p['orient']
+        lines.append('Grid turned onto the picked axis: %s along it, spun %.1f deg.'
+                     % ('cell diagonal (opposite corners)' if o['align'] == 'diagonal'
+                        else 'cell edge', o['spin_deg']))
     if res['output'] == 'form':
         f = res['form']
         lines += ['Porosity measured on the Form limit surface: %.1f %%%s'
@@ -1343,6 +1447,46 @@ def dev_build(app, job):
     return _in_scratch(app, job, run)
 
 
+def dev_orient(app, job):
+    """The grid turned onto picked axes, in a box inside an occurrence moved
+    +50 mm in X: a box edge (a proxy) and a root sketch line along world
+    (1, 1, 1) through the box centre, read through axis_in as the dialog does,
+    then the graph built on each. Reports each axis in component space and the
+    strut directions against it."""
+    def run(des):
+        body = _shape(des, 'occ_box')[0]
+        reg = read_region([body])
+        edge = next(e for e in body.edges if adsk.core.Line3D.cast(e.geometry))
+        root = des.rootComponent
+        sk = root.sketches.add(root.xYConstructionPlane)
+        line = sk.sketchCurves.sketchLines.addByTwoPoints(
+            adsk.core.Point3D.create(4.0, -1.0, -1.0), adsk.core.Point3D.create(6.0, 1.0, 1.0))
+        out = {'context': bool(reg['context'])}
+        for name, ent, align in (('edge', edge, 'edge'), ('sketch_line', line, 'diagonal')):
+            point, direction = axis_in(ent, reg['context'])
+            p = dict(kind='volume', placement='flush', flip=False, skin=False,
+                     border=True, define='cell', porosity=0.8, cell=2.0, thickness=0.65,
+                     regularity=5, seed=1, resolution='coarse', max_tris=400000,
+                     closed=True, organic=1, output='mesh', cell_type='cubic',
+                     orient={'point': point, 'dir': direction, 'align': align,
+                             'spin_deg': 0.0})
+            job_ = build_job(reg, p, 'graph')
+            job_['max_preview_segments'] = 10 ** 7
+            g = run_engine(job_)
+            cos = []
+            for s in g['segments']:
+                d = [s[3 + k] - s[k] for k in range(3)]
+                n = math.sqrt(sum(x * x for x in d))
+                if abs(n - 2.0) < 1e-4:
+                    cos.append(round(abs(sum(d[k] * direction[k] for k in range(3))) / n, 4))
+            out[name] = {'point_mm': [round(x, 4) for x in point],
+                         'dir': [round(x, 6) for x in direction],
+                         'whole_struts': len(cos), 'cos_to_axis': sorted(set(cos)),
+                         'node': [round(x, 4) for x in g['graph']['frame']['node']]}
+        return out
+    return _in_scratch(app, job, run)
+
+
 def dev_tsm(app, job):
     """Load a TSM file as a Form body in a scratch document; time it and report
     what Fusion made of it. For measuring how large a cage Fusion will take."""
@@ -1477,13 +1621,15 @@ def dev_dialog(app, job):
             it.value = v
         on_input_changed(app, inputs, iid)
     out = {}
-    for iid in ('preset', 'cell_type', 'kind', 'place', 'define', 'output'):
+    for iid in ('preset', 'cell_type', 'kind', 'place', 'define', 'output', 'orient', 'align'):
         it = _item(inputs, iid)
         out[iid] = it.selectedItem.name if it.selectedItem else None
     out.update({'porosity': _item(inputs, 'porosity').value,
                 'thickness_mm': _item(inputs, 'thickness').value * CM,
                 'organic': _item(inputs, 'organic').valueOne,
                 'regularity_visible': _item(inputs, 'regularity').isVisible,
+                'cell_mm': _item(inputs, 'cell').value * CM,
+                'axis_visible': _item(inputs, 'axis').isVisible,
                 'info': _item(inputs, 'info').formattedText})
     return out
 
@@ -1504,4 +1650,5 @@ DEV_COMMANDS = {
     'open': dev_open,
     'dialog': dev_dialog,
     'terminate': dev_terminate,
+    'orient': dev_orient,
 }

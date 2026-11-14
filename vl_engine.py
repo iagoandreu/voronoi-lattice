@@ -664,6 +664,38 @@ def cubic_edges(lo, hi, s, center):
     return nodes, E
 
 
+def lattice_frame(job, V):
+    """Rows = the cubic grid's X, Y, Z in model space, and a grid node.
+
+    No orient: the design axes, a node at the region's bbox centre. With an
+    orient {point, dir, align, spin_deg}: the grid is turned so that the picked
+    axis runs through opposite corners of the cells (align 'diagonal', the cell
+    diagonal (1,1,1)/sqrt3 along it) or along a cell edge (align 'edge'), spun
+    spin_deg about it, with a node on the axis line nearest the region."""
+    center = 0.5 * (V.min(0) + V.max(0))
+    o = job.get('orient')
+    if not o:
+        return np.eye(3), center
+    a = np.asarray(o['dir'], float)
+    a /= np.linalg.norm(a)
+    p = np.asarray(o['point'], float)
+    ref = np.array([0.0, 0.0, 1.0]) if abs(a[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    u = ref - (ref @ a) * a
+    u /= np.linalg.norm(u)
+    v = np.cross(a, u)
+    th = math.radians(float(o.get('spin_deg', 0.0)))
+    if o.get('align', 'diagonal') == 'edge':
+        e1 = math.cos(th) * u + math.sin(th) * v
+        axes = np.array([e1, np.cross(a, e1), a])
+    else:
+        c = math.sqrt(2.0 / 3.0)
+        axes = np.array([a / math.sqrt(3.0) + c * (math.cos(th + k * 2 * math.pi / 3) * u
+                                                   + math.sin(th + k * 2 * math.pi / 3) * v)
+                         for k in range(3)])
+    node = p + ((center - p) @ a) * a
+    return axes, node
+
+
 def border_segments(V, Vn, paths, ukey, X, Nn, tol, shift):
     """The border strut, THROUGH the points where the cell net meets the
     boundary: those are crossing nodes on boundary edges, so inserting them
@@ -854,10 +886,18 @@ def build_graph(R, job, s, rng_seed):
     tol = min(0.1 * r, 0.05 * s)
     info = {'cell_mm': s, 'trace_edge_mm': edge}
     parts_A, parts_B = [], []
-    # a cubic grid is centred on the region, along the design's X, Y, Z
+    # a cubic grid is built in its own frame (design X, Y, Z through the region's
+    # centre, or turned onto a picked axis) and carried back to model space
     cubic = job.get('cell_type', 'voronoi') == 'cubic'
-    center = 0.5 * (V.min(0) + V.max(0))
+    Rf, origin = lattice_frame(job, V)
+    zero = np.zeros(3)
+
+    def grid_net(Vf, Ff, Vn):
+        X, Nn, is_j, Es, ukey = grid_network((Vf - origin) @ Rf.T, Ff, Vn @ Rf.T, s, zero)
+        return X @ Rf + origin, Nn @ Rf, is_j, Es, ukey
     info['cell_type'] = 'cubic' if cubic else 'voronoi'
+    if cubic and job.get('orient'):
+        info['frame'] = {'axes': Rf.tolist(), 'node': origin.tolist()}
 
     if kind == 'volume':
         if '_sdf' not in R:
@@ -869,7 +909,9 @@ def build_graph(R, job, s, rng_seed):
 
         lo, hi = V.min(0) - abs(shift), V.max(0) + abs(shift)
         if cubic:
-            Vv, E = cubic_edges(lo, hi, s, center)
+            Vl = (V - origin) @ Rf.T
+            Vv, E = cubic_edges(Vl.min(0) - abs(shift), Vl.max(0) + abs(shift), s, zero)
+            Vv = Vv @ Rf + origin
             info['grid_nodes'] = len(Vv)
         else:
             env = P.envelope('volume', job['placement'], d, R['volume'], R['area'])
@@ -883,7 +925,7 @@ def build_graph(R, job, s, rng_seed):
         A, B, ends = clip_edges(Vv, E, phi)
         if job.get('skin', True):
             if cubic:
-                X, Nn, is_j, Es, _ = grid_network(Vf, Ff, Vn, s, center)
+                X, Nn, is_j, Es, _ = grid_net(Vf, Ff, Vn)
             else:
                 lab = nearest_seed(Vf, seeds)
                 X, Nn, is_j, Es, _ = restricted_network(Vf, Ff, Vn, seeds, lab)
@@ -903,7 +945,7 @@ def build_graph(R, job, s, rng_seed):
         parts_B.insert(0, B)
     else:
         if cubic:
-            X, Nn, is_j, Es, ukey = grid_network(Vf, Ff, Vn, s, center)
+            X, Nn, is_j, Es, ukey = grid_net(Vf, Ff, Vn)
         else:
             n = max(3, int(round(R['area'] / s ** 2)))
             Xs, Xn = surface_samples(Vf, Ff, Vn, min(max(40 * n, 40000), 3_000_000), rng)
@@ -1439,7 +1481,7 @@ def write_stl(surf, path):
 
 GRAPH_KEYS = ('kind', 'cell_type', 'placement', 'flip', 'skin', 'border', 'define', 'porosity',
               'cell', 'thickness', 'regularity', 'seed', 'closed', 'organic',
-              'output', 'resolution', 'remesh', 'remesh_edge')
+              'output', 'resolution', 'remesh', 'remesh_edge', 'orient')
 
 FUSION_FORM_S_PER_FACE = 0.0042    # measured: 2195 faces 9.3 s ... 10097 faces 42 s
 
@@ -1479,6 +1521,12 @@ def validate(job):
         raise LatticeError('a volume lattice needs a closed region')
     if job['placement'] not in P.PLACEMENTS:
         raise LatticeError('placement must be flush, middle or external')
+    o = job.get('orient')
+    if o:
+        if o.get('align', 'diagonal') not in ('diagonal', 'edge'):
+            raise LatticeError('align must be diagonal or edge')
+        if np.linalg.norm(np.asarray(o['dir'], float)) < 1e-9:
+            raise LatticeError('the lattice axis has no direction')
     if job.get('remesh', 'auto') not in REMESH_MODES:
         raise LatticeError('remesh must be auto, always or off')
     if float(job.get('remesh_edge') or 0.0) < 0:
