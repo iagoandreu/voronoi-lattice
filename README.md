@@ -15,6 +15,8 @@ Command: **Voronoi Lattice**, in *Solid > Create* and *Mesh > Modify*.
 | Input | What it does |
 |---|---|
 | **Region** | A solid, surface or mesh body, or one or more faces. Clicking a solid picks a face: pick the body in the browser, or tick **Whole body**. |
+| **Preset** | Published parameter sets; choosing one fills in the cell, porosity, strut, organic, output and placement, and touching any of those turns it back to *Custom*. *ITC / Osteobionix - cubic, 0.65 mm, 70 / 80 / 90 %* (the 80 % one is the default): the cubic Ti6Al4V-ELI lattices the Instituto Tecnologico de Canarias characterised for EBM (Arcam) - struts about 0.65 mm, design porosity 70 / 80 / 90 %, measured by weighing at 69.9 / 78.9 / 89.3 % (Yanez, Cuadrado, Martel, ULPGC-ITC 2018, accedaCRIS 10553/106776; WCB 2018 poster 10553/106775). The papers do not give the cell size; it is solved here from the porosity (2.00 mm at 80 %, pores 1.35 mm). |
+| **Cell** | *Voronoi*: an irregular foam from relaxed random seeds. *Cubic*: struts along the design X, Y and Z on a grid centred on the region. |
 | **Lattice** | Shown only when the region is **closed**, and reset to *choose* every time a closed region is picked, so the choice is always made on purpose. *Volume* fills the region with a 3D Voronoi foam. *Surface* puts a Voronoi net on its skin only. An open region is always *Surface*. |
 | **Placement** | *Flush*: the struts sit inside, their outer side on the surface, and nothing pokes through (the mesh is also trimmed to the surface). *Middle*: struts centred on the surface. *External*: struts outside, their inner side on the surface. On an open surface, "inside" is the back of the face; **Flip side** swaps it. |
 | **Skin struts** | Volume lattice: also run struts along the surface, closing the cut cells, so no strut ends loose on the skin. |
@@ -36,6 +38,15 @@ strut length and the expected mesh size, and warns when the pores come out
 narrower than the struts.
 
 ### What "porosity" means
+
+- **Cubic cell**: the porosity of the **unit cell**, solved exactly - three struts
+  of length s per cell and one node where three meet:
+  `V_cell = 3 pi r^2 s - 8 sqrt(2) r^3` (three Steinmetz bicylinders less the
+  tricylinder; checked against a boolean of three struts to 0.1 %). That is what
+  the papers mean by "80 %", and a trimmed part cannot be matched instead: in a
+  20 mm box the part's own porosity jumps between 75.6 and 82.8 % with how many
+  grid planes fit, nothing between. The part's measured porosity is still
+  reported next to the unit cell's.
 
 - **Volume lattice**: the void fraction of the lattice envelope. For *flush* that is
   the region itself. For *middle* and *external* it is the region grown by the

@@ -47,7 +47,7 @@ WORK = os.path.join(ADDIN_DIR, 'work')
 
 CMD_ID = 'VoronoiLatticeCreate'
 CMD_NAME = 'Voronoi Lattice'
-VERSION = '0.2.0'
+VERSION = '0.3.0'
 
 CM = 10.0          # internal cm -> mm
 MM = 0.1           # mm -> internal cm
@@ -61,6 +61,30 @@ PLACES = [('flush', 'Flush - inside the surface'),
           ('middle', 'Middle - centred on the surface'),
           ('external', 'External - outside the surface')]
 DEFINE = [('porosity', 'Porosity'), ('cell', 'Cell size')]
+CELL_TYPES = [('voronoi', 'Voronoi - irregular foam'),
+              ('cubic', 'Cubic - struts along X, Y, Z')]
+
+# Published parameter sets. ITC (Instituto Tecnologico de Canarias, the design
+# and EBM side of Osteobionix) characterised cubic Ti6Al4V-ELI lattices, Arcam
+# EBM: struts ~0.65 mm at 70 / 80 / 90 % design porosity, measured by weighing at
+# 69.9 / 78.9 / 89.3 % (Yanez, Cuadrado, Martel, ULPGC-ITC 2018, accedaCRIS
+# 10553/106776; WCB 2018 poster 10553/106775). The cell size is not published:
+# it is solved here for the porosity with the exact cubic model.
+PRESETS = [
+    ('custom', 'Custom', None),
+    ('itc80', 'ITC / Osteobionix - cubic, 0.65 mm, 80 %',
+     {'cell_type': 1, 'define': 0, 'porosity': 80.0, 'thickness': 0.65,
+      'organic': 1, 'output': 1, 'place': 0}),
+    ('itc70', 'ITC / Osteobionix - cubic, 0.65 mm, 70 %',
+     {'cell_type': 1, 'define': 0, 'porosity': 70.0, 'thickness': 0.65,
+      'organic': 1, 'output': 1, 'place': 0}),
+    ('itc90', 'ITC / Osteobionix - cubic, 0.65 mm, 90 %',
+     {'cell_type': 1, 'define': 0, 'porosity': 90.0, 'thickness': 0.65,
+      'organic': 1, 'output': 1, 'place': 0}),
+]
+PRESET_SOURCE = ('Yanez, Cuadrado, Martel (ULPGC / ITC) 2018: cubic Ti6Al4V-ELI, '
+                 'Arcam EBM, struts ~0.65 mm; design 70 / 80 / 90 % measured '
+                 '69.9 / 78.9 / 89.3 %. Cell size not published - solved here.')
 OUTPUTS = [('form', 'Form (T-spline body)'), ('mesh', 'Mesh body')]
 RESOLUTIONS = [('coarse', 'Coarse (3 voxels per strut)'),
                ('medium', 'Medium (4 voxels per strut)'),
@@ -70,6 +94,7 @@ REMESH = [('auto', 'Automatic - long edges or slivers'),
           ('off', 'Never')]
 
 DEFAULTS = {
+    'preset': 1, 'cell_type': 1,
     'place': 0, 'flip': False, 'skin': True, 'border': True, 'define': 0,
     'porosity': 80.0, 'cell': 3.0, 'thickness': 0.6, 'regularity': 5, 'seed': 1,
     'resolution': 1, 'max_ktris': 1500, 'replace': True, 'hide': True,
@@ -341,6 +366,7 @@ def params_from(inputs, reg):
     kind = kind_from(inputs, reg)
     return {
         'kind': kind,
+        'cell_type': _drop(inputs, 'cell_type', CELL_TYPES),
         'closed': reg['closed'],
         'placement': _drop(inputs, 'place', PLACES),
         'flip': bool(_item(inputs, 'flip').value) and not reg['closed'],
@@ -366,6 +392,7 @@ def settings_from(inputs):
         it = _item(inputs, iid).selectedItem
         return it.index if it else 0
     return {
+        'preset': idx('preset'), 'cell_type': idx('cell_type'),
         'place': idx('place'), 'flip': _item(inputs, 'flip').value,
         'skin': _item(inputs, 'skin').value, 'border': _item(inputs, 'border').value,
         'define': idx('define'), 'porosity': _item(inputs, 'porosity').value,
@@ -393,7 +420,8 @@ def check_params(p):
             raise ValueError('The cell size must be larger than the strut '
                              'thickness, or the pores close.')
         return p['cell']
-    return P.cell_for(p['kind'], p['porosity'], p['thickness'])
+    return P.cell_for(p['kind'], p['porosity'], p['thickness'],
+                      p.get('cell_type', 'voronoi'))
 
 
 # --------------------------------------------------------------------------- #
@@ -416,6 +444,7 @@ def _rows(pairs):
 def on_created(app, cmd):
     s = load_settings()
     _state().regions = {}
+    _state().command = cmd                  # for the dev bridge's dialog checks
     cmd.isRepeatable = False
     cmd.okButtonText = 'Create'
     cmd.setDialogInitialSize(380, 640)
@@ -434,6 +463,20 @@ def on_created(app, cmd):
 
     g = inputs.addGroupCommandInput('gLattice', 'Lattice')
     gi = g.children
+    pr = gi.addDropDownCommandInput('preset', 'Preset', tl)
+    for i, (_k, lab, _v) in enumerate(PRESETS):
+        pr.listItems.add(lab, i == int(s.get('preset', 0)))
+    pr.tooltip = ('Published parameter sets. Choosing one fills in the cell, '
+                  'porosity, strut, organic, output and placement; changing any of '
+                  'those afterwards turns it back to Custom.')
+    pr.tooltipDescription = PRESET_SOURCE
+    ct = gi.addDropDownCommandInput('cell_type', 'Cell', tl)
+    for i, (_k, lab) in enumerate(CELL_TYPES):
+        ct.listItems.add(lab, i == int(s.get('cell_type', 0)))
+    ct.tooltip = ('Voronoi: an irregular foam traced from relaxed random seeds. '
+                  'Cubic: a regular grid of struts along the design X, Y and Z, '
+                  'centred on the region - its porosity is the unit cell\'s, solved '
+                  'exactly.')
     kd = gi.addDropDownCommandInput('kind', 'Lattice', tl)
     for i, (_k, lab) in enumerate(KINDS):
         kd.listItems.add(lab, i == 0)
@@ -529,6 +572,9 @@ def on_created(app, cmd):
     inputs.addBoolValueInput('preview', 'Preview struts', True, '', False)
     info = inputs.addTextBoxCommandInput('info', '', '', 12, True)
     info.isFullWidth = True
+    preset = PRESETS[int(s.get('preset', 0))][2]
+    if preset:
+        apply_preset(inputs, preset)
     refresh(inputs)
 
 
@@ -549,6 +595,9 @@ def refresh(inputs):
     _item(inputs, 'porosity').isVisible = not cell
     _item(inputs, 'cell').isVisible = cell
     _item(inputs, 'gMesh').isVisible = _drop(inputs, 'output', OUTPUTS) == 'mesh'
+    voronoi = _drop(inputs, 'cell_type', CELL_TYPES) == 'voronoi'
+    _item(inputs, 'regularity').isVisible = voronoi
+    _item(inputs, 'seed').isVisible = voronoi
     _item(inputs, 'info').formattedText = describe(inputs)
 
 
@@ -576,11 +625,15 @@ def describe(inputs):
         pairs.append(('', '<b>%s</b>' % _esc(exc)))
         return _rows(pairs)
     d = p['thickness']
+    ct = p.get('cell_type', 'voronoi')
     est = P.estimate(p['kind'], s, d, reg['volume'], reg['area'], p['placement'],
-                     p['resolution'])
-    phi = P.porosity_of(p['kind'], s, d)
+                     p['resolution'], ct)
+    phi = P.porosity_of(p['kind'], s, d, ct)
     pairs.append(('cell size', '%.3f mm, pores about %.3f mm' % (s, est['pore_mm'])))
-    if p['define'] == 'cell':
+    if ct == 'cubic':
+        pairs.append(('porosity', '%.1f %% in the unit cell; the trimmed part is '
+                      'measured after the build' % (phi * 100.0)))
+    elif p['define'] == 'cell':
         pairs.append(('porosity', 'about %.1f %%' % (phi * 100.0)))
     pairs.append(('cells', 'about %d, %.0f mm of strut' % (round(est['cells']),
                                                             est['length_mm'])))
@@ -607,7 +660,55 @@ def describe(inputs):
     return _rows(pairs)
 
 
+PRESET_INPUTS = ('cell_type', 'define', 'porosity', 'thickness', 'organic', 'output',
+                 'place')
+
+
+def apply_preset(inputs, values):
+    st = _state()
+    st.applying_preset = True
+    try:
+        for k, v in values.items():
+            it = _item(inputs, k)
+            if k in ('porosity',):
+                it.value = float(v)
+            elif k == 'thickness':
+                it.value = float(v) * MM
+            elif k == 'organic':
+                it.valueOne = int(v)
+            else:
+                it.listItems.item(int(v)).isSelected = True
+    finally:
+        st.applying_preset = False
+
+
+def preset_matches(inputs, values):
+    for k, v in values.items():
+        it = _item(inputs, k)
+        if k == 'porosity':
+            cur = it.value
+        elif k == 'thickness':
+            cur = it.value * CM
+        elif k == 'organic':
+            cur = it.valueOne
+        else:
+            cur = it.selectedItem.index if it.selectedItem else -1
+        if abs(float(cur) - float(v)) > 1e-6:
+            return False
+    return True
+
+
 def on_input_changed(app, inputs, changed_id):
+    if changed_id == 'preset':
+        it = _item(inputs, 'preset').selectedItem
+        values = PRESETS[it.index][2] if it else None
+        if values:
+            apply_preset(inputs, values)
+    elif changed_id in PRESET_INPUTS and not getattr(_state(), 'applying_preset', False):
+        it = _item(inputs, 'preset').selectedItem
+        values = PRESETS[it.index][2] if it else None
+        if values and not preset_matches(inputs, values):
+            _item(inputs, 'preset').listItems.item(0).isSelected = True
     if changed_id in ('sel', 'whole'):
         # "always ask": a newly picked closed region starts with no choice made
         _item(inputs, 'kind').listItems.item(0).isSelected = True
@@ -907,7 +1008,8 @@ def import_form(des, comp, tsm, name, summary, ui=None, seconds=0.0):
 
 def lattice_name(p, res):
     kind = 'volume' if p['kind'] == 'volume' else 'surface'
-    return 'Voronoi %s %s %.0f%% d%.2f o%d' % (kind, p['placement'],
+    cell = 'Cubic' if p.get('cell_type') == 'cubic' else 'Voronoi'
+    return '%s %s %s %.0f%% d%.2f o%d' % (cell, kind, p['placement'],
                                                res['porosity_measured'] * 100.0,
                                                p['thickness'], p.get('organic', 1))
 
@@ -948,8 +1050,12 @@ def report(p, res):
     what = {'volume': 'Volume', 'surface': 'Surface'}[p['kind']]
     asked = ('' if p['define'] == 'cell' else
              '  (asked %.1f %%)' % (p['porosity'] * 100.0))
-    lines = ['%s lattice, %s, organic %d.' % (what, p['placement'],
-                                             p.get('organic', 1)),
+    cubic = p.get('cell_type') == 'cubic'
+    if cubic:
+        asked = '  (unit cell %.1f %%)' % (g.get('porosity_unit_cell', 0.0) * 100.0)
+    lines = ['%s %s lattice, %s, organic %d.' % ('Cubic' if cubic else 'Voronoi',
+                                                what.lower(), p['placement'],
+                                                p.get('organic', 1)),
              '',
              'Cell size %.3f mm, strut %.3f mm, %d struts (%.0f mm).'
              % (g['cell_mm'], p['thickness'], g['struts'], g['length_mm'])]
@@ -1330,7 +1436,8 @@ def dev_engine_on(app, job):
              seed=st['seed'], resolution=RESOLUTIONS[st['resolution']][0],
              max_tris=st['max_ktris'] * 1000, closed=reg['closed'],
              organic=st['organic'], output=OUTPUTS[st['output']][0],
-             remesh=REMESH[st['remesh']][0], remesh_edge=st['remesh_edge'])
+             remesh=REMESH[st['remesh']][0], remesh_edge=st['remesh_edge'],
+             cell_type=CELL_TYPES[st.get('cell_type', 0)][0])
     p.update(job.get('params', {}))
     t0 = time.time()
     res = run_engine(build_job(reg, p, job.get('mode', 'mesh')))
@@ -1344,6 +1451,48 @@ def dev_engine_on(app, job):
     return out
 
 
+def dev_open(app, job):
+    """Open the dialog as the button does (it appears after this job)."""
+    app.userInterface.commandDefinitions.itemById(CMD_ID).execute()
+    return {'opened': CMD_ID}
+
+
+def dev_dialog(app, job):
+    """Read the open dialog; optionally set inputs first, each through the same
+    on_input_changed a click runs. set: [[id, value]] - a dropdown takes the
+    item index, a value input mm, the porosity %."""
+    cmd = getattr(_state(), 'command', None)
+    if cmd is None:
+        return {'error': 'no dialog open'}
+    inputs = cmd.commandInputs
+    for iid, v in job.get('set', []):
+        it = _item(inputs, iid)
+        if adsk.core.DropDownCommandInput.cast(it):
+            it.listItems.item(int(v)).isSelected = True
+        elif iid in ('thickness', 'cell'):
+            it.value = float(v) * MM
+        elif iid == 'organic':
+            it.valueOne = int(v)
+        else:
+            it.value = v
+        on_input_changed(app, inputs, iid)
+    out = {}
+    for iid in ('preset', 'cell_type', 'kind', 'place', 'define', 'output'):
+        it = _item(inputs, iid)
+        out[iid] = it.selectedItem.name if it.selectedItem else None
+    out.update({'porosity': _item(inputs, 'porosity').value,
+                'thickness_mm': _item(inputs, 'thickness').value * CM,
+                'organic': _item(inputs, 'organic').valueOne,
+                'regularity_visible': _item(inputs, 'regularity').isVisible,
+                'info': _item(inputs, 'info').formattedText})
+    return out
+
+
+def dev_terminate(app, job):
+    app.userInterface.terminateActiveCommand()
+    return {'terminated': True}
+
+
 DEV_COMMANDS = {
     'bodies': dev_bodies,
     'engine_on': dev_engine_on,
@@ -1352,4 +1501,7 @@ DEV_COMMANDS = {
     'ping': dev_ping,
     'region': dev_region,
     'build': dev_build,
+    'open': dev_open,
+    'dialog': dev_dialog,
+    'terminate': dev_terminate,
 }
