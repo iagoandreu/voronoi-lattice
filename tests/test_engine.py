@@ -437,10 +437,46 @@ def test_cubic():
     g = E.run(job('cubic_graph', box, cell_type='cubic', thickness=0.65, porosity=0.8,
                   skin=False, mode='graph'))['graph']
     check('cubic graph: struts along X, Y and Z only', g['struts'] > 1000, g['struts'])
+    # turned onto a picked axis: interior struts run only along the three frame
+    # axes, the axis is a cell diagonal (|cos| = 1/sqrt3 to every strut) or a
+    # cell edge, and a grid node sits on the axis line
+    a = np.array([1.0, 2.0, 3.0]) / math.sqrt(14.0)
+    pt = np.array([3.0, -2.0, 1.0])
+    for align, want in (('diagonal', 1.0 / math.sqrt(3.0)), ('edge', None)):
+        o = {'point': pt.tolist(), 'dir': a.tolist(), 'align': align, 'spin_deg': 17.0}
+        r = E.run(job('cubic_orient_' + align, box, cell_type='cubic', thickness=0.65,
+                      porosity=0.8, skin=False, mode='graph', orient=o,
+                      max_preview_segments=10 ** 7))
+        S = np.asarray(r['segments'])
+        u = S[:, 3:] - S[:, :3]
+        L = np.linalg.norm(u, axis=1)
+        whole = np.abs(L - r['graph']['cell_mm']) < 1e-4    # segments carry 5 decimals
+        u = u[whole] / L[whole, None]
+        ax = np.asarray(r['graph']['frame']['axes'])
+        along = np.abs(u @ ax.T).max(1)
+        cosa = np.abs(u @ a)
+        node = np.asarray(r['graph']['frame']['node'])
+        q = node - pt
+        off = np.linalg.norm(q - (q @ a) * a)
+        ok_dir = (np.allclose(cosa, want, atol=1e-4) if want else
+                  np.isclose(cosa, 1.0, atol=1e-4).any()
+                  and np.all(np.isclose(cosa, 1.0, atol=1e-4) | (cosa < 1e-4)))
+        check('cubic oriented (%s): whole struts along the frame only, axis as asked, '
+              'node on the axis' % align,
+              whole.sum() > 500 and np.allclose(along, 1.0, atol=1e-4) and ok_dir
+              and off < 1e-9 and np.allclose(ax @ ax.T, np.eye(3), atol=1e-9),
+              (int(whole.sum()), round(float(cosa.min()), 6), round(float(cosa.max()), 6),
+               off))
     sheet, N = curved_sheet()
     r = E.run(job('cubic_sheet', sheet, normals=N, kind='surface', closed=False,
                   cell_type='cubic', thickness=0.65, porosity=0.6))
     check('cubic surface lattice: watertight, porosity reported',
+          r['mesh']['open_or_nonmanifold_edges'] == 0 and 0.3 < r['porosity_measured'] < 0.9,
+          '%.2f %%' % (100 * r['porosity_measured']))
+    o = {'point': [0, 0, 0], 'dir': a.tolist(), 'align': 'diagonal', 'spin_deg': 0.0}
+    r = E.run(job('cubic_sheet_orient', sheet, normals=N, kind='surface', closed=False,
+                  cell_type='cubic', thickness=0.65, porosity=0.6, orient=o))
+    check('cubic surface lattice turned onto an axis: watertight',
           r['mesh']['open_or_nonmanifold_edges'] == 0 and 0.3 < r['porosity_measured'] < 0.9,
           '%.2f %%' % (100 * r['porosity_measured']))
 
