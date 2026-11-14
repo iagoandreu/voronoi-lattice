@@ -1,15 +1,15 @@
 # Push this folder into Fusion's AddIns directory.
-# VoronoiLattice.py is the shell - changing it needs the add-in stopped and re-run.
+# Lattice.py is the shell - changing it needs the add-in stopped and re-run.
 # vl_core.py and vl_plan.py hot-reload and vl_engine.py runs fresh per build, so pushing those takes effect on the next click.
 $src = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$dst = Join-Path $env:APPDATA 'Autodesk\Autodesk Fusion 360\API\AddIns\VoronoiLattice'
+$dst = Join-Path $env:APPDATA 'Autodesk\Autodesk Fusion 360\API\AddIns\Lattice'
 
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 
 $cache = Join-Path $dst '__pycache__'
 if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Recurse -Force }
 
-foreach ($f in @('VoronoiLattice.py', 'vl_core.py', 'vl_plan.py', 'vl_engine.py', 'vl_form.py', 'VoronoiLattice.manifest')) {
+foreach ($f in @('Lattice.py', 'vl_core.py', 'vl_plan.py', 'vl_engine.py', 'vl_form.py', 'Lattice.manifest')) {
     Copy-Item -LiteralPath (Join-Path $src $f) -Destination $dst -Force
 }
 # Copy-Item -Recurse into a directory that ALREADY holds one of the same name

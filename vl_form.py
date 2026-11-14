@@ -1,4 +1,4 @@
-"""Voronoi Lattice - the strut graph as a T-Spline (Form) control cage.
+"""Lattice - the strut graph as a T-Spline (Form) control cage.
 
 Runs in the engine's Python (numpy, scipy). Millimetres in, TSM (centimetres) out.
 

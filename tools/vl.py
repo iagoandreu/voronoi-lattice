@@ -1,4 +1,4 @@
-"""Dev-bridge client: send a job to the running Voronoi Lattice add-in, print the answer.
+"""Dev-bridge client: send a job to the running Lattice add-in, print the answer.
 
     py -3.10 tools/vl.py ping
     py -3.10 tools/vl.py region '{"shape": "faces_all"}'
@@ -17,7 +17,7 @@ import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDIN = os.path.join(os.environ['APPDATA'],
-                     r'Autodesk\Autodesk Fusion 360\API\AddIns\VoronoiLattice')
+                     r'Autodesk\Autodesk Fusion 360\API\AddIns\Lattice')
 IN = os.path.join(ADDIN, 'devjobs', 'inbox')
 OUT = os.path.join(ADDIN, 'devjobs', 'outbox')
 BEAT = os.path.join(ADDIN, 'devjobs', 'heartbeat.json')

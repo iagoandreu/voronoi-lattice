@@ -1,4 +1,4 @@
-"""Voronoi Lattice engine. Runs OUTSIDE Fusion, in a CPython with numpy, scipy,
+"""Lattice engine. Runs OUTSIDE Fusion, in a CPython with numpy, scipy,
 trimesh and pyvista (py -3.10 on this machine):
 
     py -3.10 vl_engine.py job.json out.json
@@ -1045,7 +1045,7 @@ def graph_for(job, R, log=None, measure=None):
     by_cell = job.get('define', 'porosity') == 'cell'
     s = float(job['cell']) if by_cell else P.cell_for(kind, float(job['porosity']), d,
                                                       job.get('cell_type', 'voronoi'))
-    # A regular lattice's porosity is its unit cell's: the papers' "80 %" is the
+    # A regular lattice's porosity is its unit cell's: a quoted "80 %" is the
     # cell, and a trimmed part's own figure jumps with how many planes fit (a 20 mm
     # box: 75.6 % or 82.8 %, nothing between). So the cell is solved exactly from
     # the model and built once; the part's measured porosity is still reported.
@@ -1469,7 +1469,7 @@ def write_stl(surf, path):
     rec['v'] = tri
     tmp = path + '.part'
     with open(tmp, 'wb') as fh:
-        fh.write(b'Voronoi Lattice'.ljust(80, b' '))
+        fh.write(b'Lattice'.ljust(80, b' '))
         fh.write(np.uint32(len(faces)).tobytes())
         fh.write(rec.tobytes())
     os.replace(tmp, path)

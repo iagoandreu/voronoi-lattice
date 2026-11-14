@@ -1,4 +1,4 @@
-"""Voronoi Lattice - Fusion 360 add-in. THIS FILE IS THE SHELL, NOT THE WORK.
+"""Lattice - Fusion 360 add-in. THIS FILE IS THE SHELL, NOT THE WORK.
 
 Lifecycle and an optional dev bridge. The command definitions, their handlers, the
 toolbar buttons and every line of working code live in vl_core.py, which is
@@ -29,14 +29,14 @@ import time
 import traceback
 
 ADDIN_DIR = os.path.dirname(os.path.realpath(__file__))
-LOG_PATH = os.path.join(ADDIN_DIR, 'VoronoiLattice.log')
+LOG_PATH = os.path.join(ADDIN_DIR, 'Lattice.log')
 
 DEV_FLAG = os.path.join(ADDIN_DIR, 'devbridge.on')
 DEV_IN = os.path.join(ADDIN_DIR, 'devjobs', 'inbox')
 DEV_OUT = os.path.join(ADDIN_DIR, 'devjobs', 'outbox')
 DEV_DONE = os.path.join(ADDIN_DIR, 'devjobs', 'done')
 DEV_BEAT = os.path.join(ADDIN_DIR, 'devjobs', 'heartbeat.json')
-EVENT_ID = 'VoronoiLattice_DevJob'
+EVENT_ID = 'Lattice_DevJob'
 POLL_S = 0.6
 JOB_TIMEOUT_S = 900.0
 
@@ -77,7 +77,7 @@ def _fail(where):
         except Exception:
             brief = tb.strip().splitlines()[-1]
         _ui.messageBox('%s\n\n%s\n\nFull traceback in\n%s' % (where, brief, LOG_PATH),
-                       'Voronoi Lattice')
+                       'Lattice')
 
 
 # --------------------------------------------------------------------------- #
@@ -97,7 +97,7 @@ class _Created(adsk.core.CommandCreatedEventHandler):
                 ev.add(h)
                 _handlers.append(h)
         except Exception:
-            _fail('Voronoi Lattice could not open its dialog.')
+            _fail('Lattice could not open its dialog.')
 
 
 class _Execute(adsk.core.CommandEventHandler):
@@ -105,7 +105,7 @@ class _Execute(adsk.core.CommandEventHandler):
         try:
             _core().on_execute(_app, _ui, args.command.commandInputs)
         except Exception:
-            _fail('Voronoi Lattice failed.')
+            _fail('Lattice failed.')
 
 
 class _Preview(adsk.core.CommandEventHandler):
@@ -281,7 +281,7 @@ def run(context):
             _start_bridge()
         _log('started')
     except Exception:
-        _fail('Voronoi Lattice failed to start.')
+        _fail('Lattice failed to start.')
 
 
 def stop(context):
@@ -292,4 +292,4 @@ def stop(context):
         _handlers[:] = []
         _log('stopped')
     except Exception:
-        _fail('Voronoi Lattice failed to stop.')
+        _fail('Lattice failed to stop.')

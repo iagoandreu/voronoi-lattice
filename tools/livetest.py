@@ -39,7 +39,7 @@ def inside(a, b, tol):
 
 def main():
     if not client.alive():
-        print('The dev bridge is not answering - is Voronoi Lattice running?')
+        print('The dev bridge is not answering - is Lattice running?')
         return 2
     print('ping', job('ping', {}))
 

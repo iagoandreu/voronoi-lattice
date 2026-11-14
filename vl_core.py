@@ -1,4 +1,4 @@
-"""Voronoi Lattice - all the Fusion-side code. RE-IMPORTED ON EVERY COMMAND EVENT.
+"""Lattice - all the Fusion-side code. RE-IMPORTED ON EVERY COMMAND EVENT.
 
 Nothing may keep state in a module global between events; anything the dialog
 decides has to be readable back off its inputs. The one exception is the region
@@ -39,19 +39,19 @@ import vl_plan as P
 importlib.reload(P)
 
 ADDIN_DIR = os.path.dirname(os.path.realpath(__file__))
-RES_DIR = os.path.join(ADDIN_DIR, 'resources', 'VoronoiLattice')
-LOG_PATH = os.path.join(ADDIN_DIR, 'VoronoiLattice.log')
+RES_DIR = os.path.join(ADDIN_DIR, 'resources', 'Lattice')
+LOG_PATH = os.path.join(ADDIN_DIR, 'Lattice.log')
 SETTINGS = os.path.join(ADDIN_DIR, 'last_settings.json')
 ENGINE = os.path.join(ADDIN_DIR, 'vl_engine.py')
 WORK = os.path.join(ADDIN_DIR, 'work')
 
-CMD_ID = 'VoronoiLatticeCreate'
-CMD_NAME = 'Voronoi Lattice'
+CMD_ID = 'LatticeCreate'
+CMD_NAME = 'Lattice'
 VERSION = '0.4.0'
 
 CM = 10.0          # internal cm -> mm
 MM = 0.1           # mm -> internal cm
-ATTR = 'VoronoiLattice'
+ATTR = 'Lattice'
 NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 
 KINDS = [('', '- choose -'),
@@ -67,37 +67,34 @@ ORIENTS = [('design', 'Design X, Y, Z'), ('axis', 'Along an edge or axis')]
 ALIGNS = [('diagonal', 'Opposite cell corners on the axis'),
           ('edge', 'A cell edge on the axis')]
 
-# Published parameter sets. ITC (Instituto Tecnologico de Canarias, the design
-# and EBM side of Osteobionix) characterised cubic Ti6Al4V-ELI lattices, Arcam
-# EBM: struts ~0.65 mm at 70 / 80 / 90 % design porosity, measured by weighing at
-# 69.9 / 78.9 / 89.3 % (Yanez, Cuadrado, Martel, ULPGC-ITC 2018, accedaCRIS
-# 10553/106776; WCB 2018 poster 10553/106775). The cell size is not published
-# there; Donato Monopoli (ITC) told us 1 mm cells (2026-11). A 1 mm cell and a
-# 0.65 mm strut make a 39 % unit cell (pores 0.35 mm), far from 70-90 %, so the
+# Cubic parameter sets: geometry only (cell, strut, porosity), nothing of a
+# material, process or tested behaviour. The 0.65 mm strut at 70 / 80 / 90 %
+# design porosity is the cubic geometry described by Yanez, Cuadrado, Martel
+# 2018; the 1 mm cell is what is used in practice. A 1 mm cell and a 0.65 mm
+# strut make a 39 % unit cell (pores 0.35 mm), far from 70-90 %, so the
 # readings are kept apart until it is confirmed: a 1 mm cell with 0.65 mm
 # struts, a 1 mm PORE with 0.65 mm struts (cell 1.65 mm, 72 %), a 1 mm cell at
-# 80 % (struts 0.325 mm), and the papers' porosity sets with the cell solved.
-_ITC = {'cell_type': 1, 'organic': 1, 'output': 1, 'place': 0}
+# 80 % (struts 0.325 mm), and the porosity sets with the cell solved.
+_CUBIC = {'cell_type': 1, 'organic': 1, 'output': 1, 'place': 0}
 PRESETS = [
     ('custom', 'Custom', None),
-    ('itc_c1', 'ITC / Osteobionix - cubic, cell 1 mm, strut 0.65 mm',
-     dict(_ITC, define=1, cell=1.0, thickness=0.65)),
-    ('itc_p1', 'ITC / Osteobionix - cubic, pore 1 mm, strut 0.65 mm',
-     dict(_ITC, define=1, cell=1.65, thickness=0.65)),
-    ('itc_c1_80', 'ITC / Osteobionix - cubic, cell 1 mm, 80 %',
-     dict(_ITC, define=1, cell=1.0, thickness=0.3247)),
-    ('itc80', 'ITC 2018 papers - cubic, strut 0.65 mm, 80 %',
-     dict(_ITC, define=0, porosity=80.0, thickness=0.65)),
-    ('itc70', 'ITC 2018 papers - cubic, strut 0.65 mm, 70 %',
-     dict(_ITC, define=0, porosity=70.0, thickness=0.65)),
-    ('itc90', 'ITC 2018 papers - cubic, strut 0.65 mm, 90 %',
-     dict(_ITC, define=0, porosity=90.0, thickness=0.65)),
+    ('cubic_c1', 'Cubic - cell 1 mm, strut 0.65 mm',
+     dict(_CUBIC, define=1, cell=1.0, thickness=0.65)),
+    ('cubic_p1', 'Cubic - pore 1 mm, strut 0.65 mm',
+     dict(_CUBIC, define=1, cell=1.65, thickness=0.65)),
+    ('cubic_c1_80', 'Cubic - cell 1 mm, 80 %',
+     dict(_CUBIC, define=1, cell=1.0, thickness=0.3247)),
+    ('cubic_80', 'Cubic - strut 0.65 mm, 80 %',
+     dict(_CUBIC, define=0, porosity=80.0, thickness=0.65)),
+    ('cubic_70', 'Cubic - strut 0.65 mm, 70 %',
+     dict(_CUBIC, define=0, porosity=70.0, thickness=0.65)),
+    ('cubic_90', 'Cubic - strut 0.65 mm, 90 %',
+     dict(_CUBIC, define=0, porosity=90.0, thickness=0.65)),
 ]
-PRESET_SOURCE = ('Cell 1 mm: Donato Monopoli (ITC), 2026-11. Struts ~0.65 mm and '
-                 'design 70 / 80 / 90 % (measured 69.9 / 78.9 / 89.3 %): Yanez, '
-                 'Cuadrado, Martel (ULPGC / ITC) 2018, cubic Ti6Al4V-ELI, Arcam EBM. '
-                 'A 1 mm cell with 0.65 mm struts is a 39 % cell, so "1 mm" may be '
-                 'the pore: both readings are listed.')
+PRESET_SOURCE = ('Geometry only: cell, strut and porosity, not a reproduction of '
+                 'any published implant or its results. A 1 mm cell with 0.65 mm '
+                 'struts is a 39 % cell, so "1 mm" may be the pore: both readings '
+                 'are listed.')
 OUTPUTS = [('form', 'Form (T-spline body)'), ('mesh', 'Mesh body')]
 RESOLUTIONS = [('coarse', 'Coarse (3 voxels per strut)'),
                ('medium', 'Medium (4 voxels per strut)'),
@@ -164,8 +161,8 @@ def _state():
 
 def find_python():
     cands = []
-    if os.environ.get('VORONOILATTICE_PYTHON'):
-        cands.append([os.environ['VORONOILATTICE_PYTHON']])
+    if os.environ.get('LATTICE_PYTHON'):
+        cands.append([os.environ['LATTICE_PYTHON']])
     txt = os.path.join(ADDIN_DIR, 'python_path.txt')
     if os.path.exists(txt):
         try:
@@ -200,7 +197,7 @@ def python_cmd():
     if not st.python:
         raise RuntimeError(
             'No Python with numpy, scipy, trimesh and pyvista was found. Set the '
-            'VORONOILATTICE_PYTHON environment variable, or put the full path to '
+            'LATTICE_PYTHON environment variable, or put the full path to '
             'the interpreter in python_path.txt next to the add-in.')
     return list(st.python)
 
@@ -537,7 +534,7 @@ def on_created(app, cmd):
     pr = gi.addDropDownCommandInput('preset', 'Preset', tl)
     for i, (_k, lab, _v) in enumerate(PRESETS):
         pr.listItems.add(lab, i == int(s.get('preset', 0)))
-    pr.tooltip = ('Published parameter sets. Choosing one fills in the cell, '
+    pr.tooltip = ('Cubic parameter sets (geometry only). Choosing one fills in the cell, '
                   'porosity, strut, organic, output and placement; changing any of '
                   'those afterwards turns it back to Custom.')
     pr.tooltipDescription = PRESET_SOURCE
@@ -916,7 +913,7 @@ def _affine(ctx):
     return o, [tuple(pts[k][j] - o[j] for j in range(3)) for k in (1, 2, 3)]
 
 
-PREVIEW_ID = 'VoronoiLatticePreview'
+PREVIEW_ID = 'LatticePreview'
 
 
 def clear_preview(des):
@@ -1244,8 +1241,8 @@ def on_destroy(app):
 # toolbar
 # --------------------------------------------------------------------------- #
 
-TOOLTIP = ('Fill a volume with a Voronoi lattice, or cover a surface or faces '
-           'with one.\n\n'
+TOOLTIP = ('Fill a volume with a lattice - an irregular Voronoi foam or a regular '
+           'cubic grid - or cover a surface or faces with one.\n\n'
            'Pick a solid, surface or mesh body, or faces. A closed region asks '
            'whether the lattice fills it (Volume) or covers its skin (Surface). '
            'Choose where the struts sit - flush inside, centred on, or outside '

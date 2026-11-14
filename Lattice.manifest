@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion",
+    "type": "addin",
+    "id": "a1fc26fb-82c5-48d6-9a7b-08984d7e0321",
+    "author": "Iago Andreu",
+    "description": {
+        "": "Lattice - an irregular Voronoi foam or a regular cubic grid - in a volume, a surface or a set of faces: inside or on the skin, flush, middle or external, sized by porosity or cell size, organic 1-10, as a Form (T-spline) body or a watertight mesh."
+    },
+    "version": "0.4.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

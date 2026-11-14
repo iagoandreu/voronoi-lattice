@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw
 from scipy.spatial import Voronoi
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(HERE, 'resources', 'VoronoiLattice')
+OUT = os.path.join(HERE, 'resources', 'Lattice')
 SS = 8
 
 LIGHT = (70, 70, 70, 255)
