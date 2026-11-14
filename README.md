@@ -1,21 +1,22 @@
-# Voronoi Lattice
+# Lattice
 
-A Fusion 360 add-in that fills a volume with a Voronoi lattice, or covers a surface
-or a set of faces with one. It follows the 3-matic lattice workflow: pick the
+A Fusion 360 add-in that fills a volume with a lattice - an irregular Voronoi
+foam or a regular cubic grid - or covers a surface or a set of faces with one.
+It follows the 3-matic lattice workflow: pick the
 region, say whether the lattice goes inside or on the skin, where the struts sit
 relative to the surface, then the porosity and strut thickness. The result is a
 **Form (T-spline) body**, or a watertight mesh body where a Form is not
 possible. Its porosity is **measured** on what was built and reported, not
 assumed from the target.
 
-Command: **Voronoi Lattice**, in *Solid > Create* and *Mesh > Modify*.
+Command: **Lattice**, in *Solid > Create* and *Mesh > Modify*.
 
 ## The dialog
 
 | Input | What it does |
 |---|---|
 | **Region** | A solid, surface or mesh body, or one or more faces. Clicking a solid picks a face: pick the body in the browser, or tick **Whole body**. |
-| **Preset** | Published parameter sets; choosing one fills in the cell, porosity, strut, organic, output and placement, and touching any of those turns it back to *Custom*. The ITC / Osteobionix cubic Ti6Al4V-ELI lattice (Instituto Tecnologico de Canarias, EBM Arcam): struts about 0.65 mm at design porosity 70 / 80 / 90 %, measured by weighing at 69.9 / 78.9 / 89.3 % (Yanez, Cuadrado, Martel, ULPGC-ITC 2018, accedaCRIS 10553/106776; WCB 2018 poster 10553/106775); 1 mm cells according to Donato Monopoli (ITC, 2026-11). A 1 mm cell with 0.65 mm struts is only a 39 % unit cell (pores 0.35 mm), so the readings are listed apart until confirmed: *cell 1 mm, strut 0.65 mm* (the default, 39 %), *pore 1 mm, strut 0.65 mm* (cell 1.65 mm, 72 %), *cell 1 mm, 80 %* (strut 0.325 mm), and the papers' *strut 0.65 mm, 70 / 80 / 90 %* with the cell solved (2.00 mm at 80 %). |
+| **Preset** | Cubic parameter sets; choosing one fills in the cell, porosity, strut, organic, output and placement, and touching any of those turns it back to *Custom*. They set **geometry only** - cell, strut and porosity - and are not a reproduction of any published implant, its material, process or test results. A 1 mm cell with 0.65 mm struts is only a 39 % unit cell (pores 0.35 mm), so both readings of "1 mm" are listed: *cell 1 mm, strut 0.65 mm* (the default, 39 %), *pore 1 mm, strut 0.65 mm* (cell 1.65 mm, 72 %), *cell 1 mm, 80 %* (strut 0.325 mm), and *strut 0.65 mm, 70 / 80 / 90 %* with the cell solved (2.00 mm at 80 %). |
 | **Cell** | *Voronoi*: an irregular foam from relaxed random seeds. *Cubic*: a regular grid of struts. |
 | **Grid orientation** | Cubic only. *Design X, Y, Z*: struts along the design axes, a node at the centre of the region. *Along an edge or axis*: pick a straight edge, sketch line, construction axis or cylindrical face; the grid is turned onto it with a node on that line. **Align** *Opposite cell corners on the axis* puts the cell diagonal along it - the axis runs through two opposite vertices of every cell it crosses; *A cell edge on the axis* puts one strut direction along it. **Spin about the axis** turns the grid round the axis. |
 | **Lattice** | Shown only when the region is **closed**, and reset to *choose* every time a closed region is picked, so the choice is always made on purpose. *Volume* fills the region with a 3D Voronoi foam. *Surface* puts a Voronoi net on its skin only. An open region is always *Surface*. |
@@ -44,7 +45,7 @@ narrower than the struts.
   of length s per cell and one node where three meet:
   `V_cell = 3 pi r^2 s - 8 sqrt(2) r^3` (three Steinmetz bicylinders less the
   tricylinder; checked against a boolean of three struts to 0.1 %). That is what
-  the papers mean by "80 %", and a trimmed part cannot be matched instead: in a
+  a quoted "80 %" means, and a trimmed part cannot be matched instead: in a
   20 mm box the part's own porosity jumps between 75.6 and 82.8 % with how many
   grid planes fit, nothing between. The part's measured porosity is still
   reported next to the unit cell's.
@@ -140,12 +141,12 @@ size.
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-Then in Fusion: *Utilities > Add-Ins*, select **VoronoiLattice**, **Run**. The
+Then in Fusion: *Utilities > Add-Ins*, select **Lattice**, **Run**. The
 engine needs a Python with numpy, scipy, trimesh and pyvista. It is found
-automatically (`py -3.10` here), or set `VORONOILATTICE_PYTHON`, or put the
+automatically (`py -3.10` here), or set `LATTICE_PYTHON`, or put the
 interpreter's path in `python_path.txt` next to the add-in.
 
-`VoronoiLattice.py` is a thin shell. `vl_core.py` and `vl_plan.py` hot-reload on
+`Lattice.py` is a thin shell. `vl_core.py` and `vl_plan.py` hot-reload on
 every command event, and `vl_engine.py` runs fresh per build, so only shell
 changes need a Stop/Run.
 

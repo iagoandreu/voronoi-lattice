@@ -1,4 +1,4 @@
-"""Voronoi Lattice - porosity <-> cell size, and what a run will cost. STDLIB ONLY.
+"""Lattice - porosity <-> cell size, and what a run will cost. STDLIB ONLY.
 
 Imported by vl_core (inside Fusion, no numpy) for the live numbers in the dialog,
 and by vl_engine (py -3.10) for its first guess, so both start from the same model.
