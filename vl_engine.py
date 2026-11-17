@@ -175,7 +175,8 @@ def refine(V, F, max_edge, max_iter=12):
     subdivide_to_size refines triangle by triangle and returns a soup, so where
     one triangle was split and its neighbour was not, a crack opened - on an open
     STL surface every crack was taken for a border and got a border strut
-    (test case B: 17000 border struts, porosity stuck at 72 % for any cell size)."""
+    (on a clinical test case: 17000 border struts, porosity stuck at 72 % for
+    any cell size)."""
     V = np.asarray(V, float)
     F = np.asarray(F, np.int64)
     if max_edge <= 0:

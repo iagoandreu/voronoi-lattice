@@ -240,6 +240,7 @@ def read_region(entities, whole=False):
     if len(bodies) > 1:
         raise ValueError('Select one body at a time.')
     ctx = _context(entities[0])
+    ticked = False
     if faces:
         owners = {}
         for f in faces:
@@ -247,7 +248,10 @@ def read_region(entities, whole=False):
             owners[b.entityToken] = b
         if len(owners) == 1:
             b = list(owners.values())[0]
-            if whole or (b.isSolid and len(faces) == b.faces.count):
+            every = b.isSolid and len(faces) == b.faces.count
+            if whole or every:
+                # remembered, so the box that did it stays on screen to untick
+                ticked = whole and not every
                 bodies, faces = [b], []
     if bodies:
         b = _native(bodies[0])
@@ -264,7 +268,8 @@ def read_region(entities, whole=False):
             vol = b.volume * 1000.0 if closed else 0.0
         return {'entities': [b], 'closed': closed, 'what': what, 'name': b.name,
                 'area': area, 'volume': vol, 'component': b.parentComponent,
-                'context': ctx, 'body': b, 'faces_of_one_solid': None}
+                'context': ctx, 'body': b, 'faces_of_one_solid': None,
+                'whole_ticked': ticked}
     nat = [_native(f) for f in faces]
     area = sum(f.area for f in nat) * 100.0
     owner_solid = None
@@ -677,7 +682,8 @@ def refresh(inputs):
     _item(inputs, 'flip').isVisible = bool(reg) and not closed
     _item(inputs, 'border').isVisible = bool(reg) and not closed
     _item(inputs, 'skin').isVisible = kind == 'volume'
-    _item(inputs, 'whole').isVisible = bool(reg and reg['faces_of_one_solid'])
+    _item(inputs, 'whole').isVisible = bool(
+        reg and (reg['faces_of_one_solid'] or reg.get('whole_ticked')))
     cell = _drop(inputs, 'define', DEFINE) == 'cell'
     _item(inputs, 'porosity').isVisible = not cell
     _item(inputs, 'cell').isVisible = cell
@@ -1247,7 +1253,7 @@ TOOLTIP = ('Fill a volume with a lattice - an irregular Voronoi foam or a regula
            'whether the lattice fills it (Volume) or covers its skin (Surface). '
            'Choose where the struts sit - flush inside, centred on, or outside '
            'the surface - then the porosity (or cell size) and strut thickness. '
-           'The result is a watertight mesh body; its porosity is measured, not '
+           'The result is a Form or a watertight mesh body; its porosity is measured, not '
            'assumed.')
 
 PANELS = ['SolidCreatePanel', 'ParaMeshModifyPanel']
