@@ -61,8 +61,16 @@ PLACES = [('flush', 'Flush - inside the surface'),
           ('middle', 'Middle - centred on the surface'),
           ('external', 'External - outside the surface')]
 DEFINE = [('porosity', 'Porosity'), ('cell', 'Cell size')]
+# appended only: the saved cell_type is an index into this
 CELL_TYPES = [('voronoi', 'Voronoi - irregular foam'),
-              ('cubic', 'Cubic - regular grid of struts')]
+              ('cubic', 'Cubic - struts along the cube edges'),
+              ('bcc', 'BCC - body-centred cubic'),
+              ('fcc', 'FCC - face-centred cubic'),
+              ('octet', 'Octet truss'),
+              ('diamond', 'Diamond'),
+              ('kelvin', 'Kelvin - truncated octahedra')]
+CELL_NAMES = {'voronoi': 'Voronoi', 'cubic': 'Cubic', 'bcc': 'BCC', 'fcc': 'FCC',
+              'octet': 'Octet', 'diamond': 'Diamond', 'kelvin': 'Kelvin'}
 ORIENTS = [('design', 'Design X, Y, Z'), ('axis', 'Along an edge or axis')]
 ALIGNS = [('diagonal', 'Opposite cell corners on the axis'),
           ('edge', 'A cell edge on the axis')]
@@ -431,7 +439,7 @@ def axis_of(e):
 def orient_from(inputs, reg):
     """The picked axis in the region's own component space, mm - where the
     engine works - or None for the design axes."""
-    if _drop(inputs, 'cell_type', CELL_TYPES) != 'cubic' or \
+    if _drop(inputs, 'cell_type', CELL_TYPES) not in P.REGULAR or \
             _drop(inputs, 'orient', ORIENTS) != 'axis':
         return None
     picks = selected(_item(inputs, 'axis'))
@@ -488,10 +496,18 @@ def check_params(p):
         raise ValueError('The strut thickness must be positive.')
     if p.get('orient') and p['orient'].get('missing'):
         raise ValueError('Pick the edge or axis the grid is turned onto.')
+    ct = p.get('cell_type', 'voronoi')
+    if p['kind'] == 'surface' and ct not in P.SURFACE_TYPES:
+        raise ValueError('A %s cell fills a volume. On a surface use Voronoi or '
+                         'Cubic.' % CELL_NAMES[ct])
     if p['define'] == 'cell':
         if p['cell'] <= p['thickness']:
             raise ValueError('The cell size must be larger than the strut '
                              'thickness, or the pores close.')
+        if ct in P.FRACTION and P.porosity_of(p['kind'], p['cell'], p['thickness'],
+                                              ct) < 0.02:
+            raise ValueError('With these struts a %.3g mm %s cell is solid - raise '
+                             'the cell size.' % (p['cell'], CELL_NAMES[ct]))
         return p['cell']
     return P.cell_for(p['kind'], p['porosity'], p['thickness'],
                       p.get('cell_type', 'voronoi'))
@@ -727,7 +743,7 @@ def describe(inputs):
                      p['resolution'], ct)
     phi = P.porosity_of(p['kind'], s, d, ct)
     pairs.append(('cell size', '%.3f mm, pores about %.3f mm' % (s, est['pore_mm'])))
-    if ct == 'cubic':
+    if ct in P.REGULAR:
         pairs.append(('porosity', '%.1f %% in the unit cell; the trimmed part is '
                       'measured after the build' % (phi * 100.0)))
         o = p.get('orient')
@@ -1110,7 +1126,7 @@ def import_form(des, comp, tsm, name, summary, ui=None, seconds=0.0):
 
 def lattice_name(p, res):
     kind = 'volume' if p['kind'] == 'volume' else 'surface'
-    cell = 'Cubic' if p.get('cell_type') == 'cubic' else 'Voronoi'
+    cell = CELL_NAMES.get(p.get('cell_type', 'voronoi'), 'Voronoi')
     return '%s %s %s %.0f%% d%.2f o%d' % (cell, kind, p['placement'],
                                                res['porosity_measured'] * 100.0,
                                                p['thickness'], p.get('organic', 1))
@@ -1152,16 +1168,17 @@ def report(p, res):
     what = {'volume': 'Volume', 'surface': 'Surface'}[p['kind']]
     asked = ('' if p['define'] == 'cell' else
              '  (asked %.1f %%)' % (p['porosity'] * 100.0))
-    cubic = p.get('cell_type') == 'cubic'
-    if cubic:
+    ct = p.get('cell_type', 'voronoi')
+    regular = ct in P.REGULAR
+    if regular:
         asked = '  (unit cell %.1f %%)' % (g.get('porosity_unit_cell', 0.0) * 100.0)
-    lines = ['%s %s lattice, %s, organic %d.' % ('Cubic' if cubic else 'Voronoi',
+    lines = ['%s %s lattice, %s, organic %d.' % (CELL_NAMES.get(ct, 'Voronoi'),
                                                 what.lower(), p['placement'],
                                                 p.get('organic', 1)),
              '',
              'Cell size %.3f mm, strut %.3f mm, %d struts (%.0f mm).'
              % (g['cell_mm'], p['thickness'], g['struts'], g['length_mm'])]
-    if cubic and p.get('orient'):
+    if regular and p.get('orient'):
         o = p['orient']
         lines.append('Grid turned onto the picked axis: %s along it, spun %.1f deg.'
                      % ('cell diagonal (opposite corners)' if o['align'] == 'diagonal'
@@ -1248,7 +1265,8 @@ def on_destroy(app):
 # --------------------------------------------------------------------------- #
 
 TOOLTIP = ('Fill a volume with a lattice - an irregular Voronoi foam or a regular '
-           'cubic grid - or cover a surface or faces with one.\n\n'
+           'cell (cubic, BCC, FCC, octet, diamond or Kelvin) - or cover a surface '
+           'or faces with a Voronoi or cubic one.\n\n'
            'Pick a solid, surface or mesh body, or faces. A closed region asks '
            'whether the lattice fills it (Volume) or covers its skin (Surface). '
            'Choose where the struts sit - flush inside, centred on, or outside '

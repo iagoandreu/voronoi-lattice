@@ -33,6 +33,7 @@ way count, so a thin wall's two sides do not steal each other's cells.
 """
 
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -665,6 +666,77 @@ def cubic_edges(lo, hi, s, center):
     return nodes, E
 
 
+def _fcc_points():
+    return [(0, 0, 0), (0, 2, 2), (2, 0, 2), (2, 2, 0)]
+
+
+def unit_edges(cell_type):
+    """The struts one cubic cell owns, as pairs of integer points in quarter
+    cells (the cell is 0..4). Tiled and de-duplicated they give the lattice:
+    every node sits on a quarter-cell point, so integer keys weld them exactly.
+    Checked against the textbook cells (tests): strut length per cell and node
+    valence - BCC 4 sqrt3 s, 8; FCC 6 sqrt2 s, 4 and 12; octet 12 sqrt2 s, 12;
+    diamond 4 sqrt3 s, 4; Kelvin (truncated octahedra) 6 sqrt2 s, 4."""
+    E = []
+    if cell_type == 'bcc':
+        E = [((2, 2, 2), c) for c in itertools.product((0, 4), repeat=3)]
+    elif cell_type == 'fcc':
+        # face diagonals, split at the face centre
+        for ax in range(3):
+            c = [2, 2, 2]
+            c[ax] = 0
+            for u, v in itertools.product((0, 4), repeat=2):
+                q = [u, v]
+                q.insert(ax, 0)
+                E.append((tuple(c), tuple(q)))
+    elif cell_type == 'octet':
+        # every FCC point to its 12 nearest neighbours (s / sqrt2 away)
+        nb = [p for p in itertools.product(range(-2, 7, 2), repeat=3) if sum(p) % 4 == 0]
+        for a in _fcc_points():
+            for b in nb:
+                if sum((x - y) ** 2 for x, y in zip(a, b)) == 8:
+                    E.append((a, b))
+    elif cell_type == 'diamond':
+        for a in _fcc_points():
+            for dv in ((1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1)):
+                E.append((a, tuple(x + y for x, y in zip(a, dv))))
+    elif cell_type == 'kelvin':
+        # truncated octahedra on the BCC points: vertices at the permutations
+        # of (0, +-1, +-2) quarter cells, edges a quarter-cell diagonal long
+        perms = set()
+        for p in itertools.permutations((0, 1, 2)):
+            for sg in itertools.product((1, -1), repeat=3):
+                perms.add(tuple(g * x for g, x in zip(sg, p)))
+        perms = sorted(perms)
+        for c in ((0, 0, 0), (2, 2, 2)):
+            vs = [tuple(x + y for x, y in zip(c, p)) for p in perms]
+            for a, b in itertools.combinations(vs, 2):
+                if sum((x - y) ** 2 for x, y in zip(a, b)) == 2:
+                    E.append((a, b))
+    else:
+        raise LatticeError('no unit cell for %r' % cell_type)
+    return np.array(E, np.int64)
+
+
+def regular_edges(cell_type, lo, hi, s, center):
+    """Nodes and edges of a regular lattice of cubic cells of side s with a cell
+    corner at center, one cell beyond [lo, hi] on every side."""
+    if cell_type == 'cubic':
+        return cubic_edges(lo, hi, s, center)
+    U = unit_edges(cell_type)
+    rng = []
+    for k in range(3):
+        i0 = int(math.floor((lo[k] - center[k]) / s)) - 1
+        i1 = int(math.ceil((hi[k] - center[k]) / s)) + 1
+        rng.append(np.arange(i0, i1 + 1))
+    off = np.stack(np.meshgrid(*rng, indexing='ij'), -1).reshape(-1, 3) * 4
+    P = (U[None] + off[:, None, None]).reshape(-1, 3)
+    keys, inv = np.unique(P, axis=0, return_inverse=True)
+    E = np.sort(inv.reshape(-1, 2), axis=1)
+    E = np.unique(E, axis=0)
+    return center + keys * (0.25 * s), E
+
+
 def lattice_frame(job, V):
     """Rows = the cubic grid's X, Y, Z in model space, and a grid node.
 
@@ -868,6 +940,38 @@ def cached_volume_samples(R, phi, shift, lo, hi, M, rng):
     return X[:M]
 
 
+def skin_ties(ends, Jp, sA, sB, r, s):
+    """Struts from free ends on the skin to the skin itself. An end within a
+    strut radius of a skin strut already touches it; one near a skin junction
+    goes to the junction; any other end gets a short strut, along the skin, to
+    the nearest point of the nearest skin strut (within half a cell)."""
+    step = 0.5 * r
+    L = np.linalg.norm(sB - sA, axis=1)
+    n = np.maximum(2, np.ceil(L / step).astype(int) + 1)
+    seg = np.repeat(np.arange(len(sA)), n)
+    t = np.concatenate([np.linspace(0.0, 1.0, k) for k in n])
+    pts = sA[seg] + t[:, None] * (sB - sA)[seg]
+    dd, k = cKDTree(pts).query(ends, workers=-1)
+    tA, tB = [], []
+    if len(Jp):
+        dj, kj = cKDTree(Jp).query(ends, workers=-1)
+    else:
+        dj = np.full(len(ends), np.inf)
+        kj = np.zeros(len(ends), int)
+    for i in range(len(ends)):
+        if dd[i] <= r:
+            continue
+        if dj[i] < 0.25 * s:
+            tA.append(ends[i])
+            tB.append(Jp[kj[i]])
+        elif dd[i] < 0.5 * s:
+            tA.append(ends[i])
+            tB.append(pts[k[i]])
+    if not tA:
+        return np.zeros((0, 3)), np.zeros((0, 3))
+    return np.array(tA), np.array(tB)
+
+
 def build_graph(R, job, s, rng_seed):
     """Centrelines for cell size s. R is the prepared region."""
     rng = np.random.default_rng(int(rng_seed))
@@ -887,17 +991,19 @@ def build_graph(R, job, s, rng_seed):
     tol = min(0.1 * r, 0.05 * s)
     info = {'cell_mm': s, 'trace_edge_mm': edge}
     parts_A, parts_B = [], []
-    # a cubic grid is built in its own frame (design X, Y, Z through the region's
-    # centre, or turned onto a picked axis) and carried back to model space
-    cubic = job.get('cell_type', 'voronoi') == 'cubic'
+    # a regular grid is built in its own frame (design X, Y, Z through the
+    # region's centre, or turned onto a picked axis) and carried back to model
+    # space; its skin is traced along the cube walls whatever the cell
+    cell_type = job.get('cell_type', 'voronoi')
+    regular = cell_type in P.REGULAR
     Rf, origin = lattice_frame(job, V)
     zero = np.zeros(3)
 
     def grid_net(Vf, Ff, Vn):
         X, Nn, is_j, Es, ukey = grid_network((Vf - origin) @ Rf.T, Ff, Vn @ Rf.T, s, zero)
         return X @ Rf + origin, Nn @ Rf, is_j, Es, ukey
-    info['cell_type'] = 'cubic' if cubic else 'voronoi'
-    if cubic and job.get('orient'):
+    info['cell_type'] = cell_type
+    if regular and job.get('orient'):
         info['frame'] = {'axes': Rf.tolist(), 'node': origin.tolist()}
 
     if kind == 'volume':
@@ -909,9 +1015,10 @@ def build_graph(R, job, s, rng_seed):
             return sdf(X) - shift
 
         lo, hi = V.min(0) - abs(shift), V.max(0) + abs(shift)
-        if cubic:
+        if regular:
             Vl = (V - origin) @ Rf.T
-            Vv, E = cubic_edges(Vl.min(0) - abs(shift), Vl.max(0) + abs(shift), s, zero)
+            Vv, E = regular_edges(cell_type, Vl.min(0) - abs(shift),
+                                  Vl.max(0) + abs(shift), s, zero)
             Vv = Vv @ Rf + origin
             info['grid_nodes'] = len(Vv)
         else:
@@ -925,7 +1032,7 @@ def build_graph(R, job, s, rng_seed):
             info['seeds'] = len(seeds)
         A, B, ends = clip_edges(Vv, E, phi)
         if job.get('skin', True):
-            if cubic:
+            if regular:
                 X, Nn, is_j, Es, _ = grid_net(Vf, Ff, Vn)
             else:
                 lab = nearest_seed(Vf, seeds)
@@ -935,17 +1042,25 @@ def build_graph(R, job, s, rng_seed):
             # a clipped edge leaves the volume at a triple point of the skin;
             # land it exactly on the skin junction it is aiming at
             Jp = X[is_j] + shift * Nn[is_j]
-            if len(Jp) and len(ends):
-                dd, k = cKDTree(Jp).query(B[ends], workers=-1)
-                hit = dd < 0.4 * s
-                B[ends[hit]] = Jp[k[hit]]
+            if cell_type in ('voronoi', 'cubic'):
+                if len(Jp) and len(ends):
+                    dd, k = cKDTree(Jp).query(B[ends], workers=-1)
+                    hit = dd < 0.4 * s
+                    B[ends[hit]] = Jp[k[hit]]
+            elif len(ends) and len(sA):
+                # the other cells' struts leave the volume anywhere in a skin
+                # window: tie each end to the skin it meets
+                cA, cB = skin_ties(B[ends], Jp, sA, sB, r, s)
+                parts_A.append(cA)
+                parts_B.append(cB)
+                info['skin_ties'] = len(cA)
             parts_A.append(sA)
             parts_B.append(sB)
             info['skin_struts'] = len(sA)
         parts_A.insert(0, A)
         parts_B.insert(0, B)
     else:
-        if cubic:
+        if regular:
             X, Nn, is_j, Es, ukey = grid_net(Vf, Ff, Vn)
         else:
             n = max(3, int(round(R['area'] / s ** 2)))
@@ -1050,7 +1165,7 @@ def graph_for(job, R, log=None, measure=None):
     # cell, and a trimmed part's own figure jumps with how many planes fit (a 20 mm
     # box: 75.6 % or 82.8 %, nothing between). So the cell is solved exactly from
     # the model and built once; the part's measured porosity is still reported.
-    if job.get('cell_type', 'voronoi') == 'cubic':
+    if job.get('cell_type', 'voronoi') in P.REGULAR:
         by_cell = True
     want, _ = target_solid(job, R)
     best = None
@@ -1076,8 +1191,8 @@ def graph_for(job, R, log=None, measure=None):
             output = 'mesh'
             log('No Form possible - building a mesh: %s' % fallback)
             vol, extra = M.volume(A, B, output)
-        if job.get('cell_type', 'voronoi') == 'cubic':
-            info['porosity_unit_cell'] = P.porosity_of(kind, s, d, 'cubic')
+        if job.get('cell_type', 'voronoi') in P.REGULAR:
+            info['porosity_unit_cell'] = P.porosity_of(kind, s, d, job['cell_type'])
         info.update({'iterations': it + 1, 'output': output,
                      'volume_predicted_mm3': vol,
                      'porosity_predicted': porosity_from(job, R, vol)})
@@ -1516,8 +1631,12 @@ def validate(job):
         raise LatticeError('strut thickness must be positive')
     if job['kind'] not in ('volume', 'surface'):
         raise LatticeError('choose a volume or a surface lattice')
-    if job.get('cell_type', 'voronoi') not in P.CELL_TYPES:
-        raise LatticeError('the cell must be voronoi or cubic')
+    ct = job.get('cell_type', 'voronoi')
+    if ct not in P.CELL_TYPES:
+        raise LatticeError('the cell must be one of ' + ', '.join(P.CELL_TYPES))
+    if job['kind'] == 'surface' and ct not in P.SURFACE_TYPES:
+        raise LatticeError('a %s cell fills a volume; on a surface use Voronoi or '
+                           'Cubic' % ct)
     if job['kind'] == 'volume' and not job.get('closed'):
         raise LatticeError('a volume lattice needs a closed region')
     if job['placement'] not in P.PLACEMENTS:
@@ -1540,6 +1659,9 @@ def validate(job):
         if float(job['cell']) <= d:
             raise LatticeError('the cell size must be larger than the strut '
                                'thickness, or the pores close')
+        if ct in P.FRACTION and P.porosity_of(job['kind'], float(job['cell']), d, ct) < 0.02:
+            raise LatticeError('a %.3g mm %s cell with %.3g mm struts is solid - '
+                               'raise the cell size' % (float(job['cell']), ct, d))
     elif not 0.0 < float(job['porosity']) < 1.0:
         raise LatticeError('porosity must be between 0 and 100 %')
 

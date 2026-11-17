@@ -21,8 +21,12 @@ import trimesh                                                # noqa: E402
 
 import vl_engine as E                                         # noqa: E402
 import vl_plan as P                                           # noqa: E402
+from scipy.spatial import cKDTree                              # noqa: E402
 
 FAILED = []
+# a trimmed regular part's porosity differs from its unit cell's by how many
+# whole cells fit; 24 mm boxes, cells 3-4.8 mm
+CELL_TOL = 0.04
 WORK = tempfile.mkdtemp(prefix='vl_test_')
 
 
@@ -481,11 +485,71 @@ def test_cubic():
           '%.2f %%' % (100 * r['porosity_measured']))
 
 
+def test_cells():
+    print('regular cells: BCC, FCC, octet, diamond, Kelvin')
+    r3, r2 = math.sqrt(3.0), math.sqrt(2.0)
+    want = {'bcc': (4 * r3, {8}), 'fcc': (6 * r2, {4, 12}), 'octet': (12 * r2, {12}),
+            'diamond': (4 * r3, {4}), 'kelvin': (6 * r2, {4})}
+    for ct, (L_cell, valence) in want.items():
+        # a 6-cell block; count only what lies in its middle 4 x 4 x 4
+        X, Ed = E.regular_edges(ct, np.zeros(3), np.full(3, 4.0), 1.0, np.zeros(3))
+        a, b = X[Ed[:, 0]], X[Ed[:, 1]]
+        mid = 0.5 * (a + b)
+        inner = np.all((mid >= 0.0) & (mid < 4.0), 1)
+        L = np.linalg.norm(b - a, axis=1)[inner].sum() / 64.0
+        deg = np.bincount(Ed.ravel(), minlength=len(X))
+        core = np.all((X >= 0.5) & (X <= 3.5), 1)
+        check('%s: strut length per cell and node valence' % ct,
+              abs(L - L_cell) < 1e-9 and set(deg[core].tolist()) == valence,
+              (round(L, 4), sorted(set(deg[core].tolist()))))
+        # the stored solid fraction against a fresh measurement (other points)
+        t = 0.3
+        seg_pts = []
+        for p, q in zip(a, b):
+            m = max(2, int(math.ceil(np.linalg.norm(q - p) / 0.004)) + 1)
+            seg_pts.append(p + np.linspace(0, 1, m)[:, None] * (q - p))
+        tree = cKDTree(np.vstack(seg_pts))
+        rng = np.random.default_rng(11)
+        Q = 1.0 + 2.0 * rng.random((400_000, 3))
+        frac = float(np.mean(tree.query(Q, workers=-1)[0] <= 0.5 * t))
+        model = 1.0 - P.porosity_of('volume', 1.0, t, ct)
+        check('%s: stored solid fraction at d/s 0.3 matches a fresh measurement' % ct,
+              abs(frac - model) < 0.005, (round(frac, 4), round(model, 4)))
+        s = P.cell_for('volume', 0.8, 0.65, ct)
+        check('%s: the cell for 80 %% gives 80 %%' % ct,
+              abs(P.porosity_of('volume', s, 0.65, ct) - 0.8) < 1e-6, round(s, 4))
+    try:
+        P.cell_for('surface', 0.8, 0.65, 'bcc')
+        check('a BCC surface lattice is refused', False)
+    except P.PlanError:
+        check('a BCC surface lattice is refused', True)
+    box = trimesh.creation.box((24, 24, 24))
+    for ct in want:
+        r = E.run(job('cell_%s' % ct, box, cell_type=ct, thickness=0.65, porosity=0.8,
+                      skin=False, organic=1))
+        g = r['graph']
+        check('%s box: the unit cell is the 80 %% one, the part measures within '
+              '%.0f points' % (ct, 100 * CELL_TOL),
+              abs(g['porosity_unit_cell'] - 0.8) < 1e-6
+              and abs(r['porosity_measured'] - 0.8) < CELL_TOL,
+              '%.2f %%' % (100 * r['porosity_measured']))
+        check('%s box: watertight, one piece' % ct,
+              r['mesh']['open_or_nonmanifold_edges'] == 0 and r['mesh']['components'] == 1,
+              (r['mesh']['open_or_nonmanifold_edges'], r['mesh']['components']))
+    r = E.run(job('cell_diamond_skin', box, cell_type='diamond', thickness=0.65,
+                  porosity=0.8, skin=True, organic=1))
+    check('diamond box with skin: struts tied to the skin, watertight, one piece',
+          r['graph'].get('skin_ties', 0) > 0 and r['mesh']['open_or_nonmanifold_edges'] == 0
+          and r['mesh']['components'] == 1,
+          (r['graph'].get('skin_ties'), r['mesh']['components']))
+
+
 def main():
     test_plan()
     test_strut_volume()
     test_volume()
     test_cubic()
+    test_cells()
     test_surface()
     test_refine()
     test_thin_wall()

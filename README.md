@@ -1,7 +1,8 @@
 # Lattice
 
 A Fusion 360 add-in that fills a volume with a lattice - an irregular Voronoi
-foam or a regular cubic grid - or covers a surface or a set of faces with one.
+foam or a regular cell: cubic, BCC, FCC, octet truss, diamond or Kelvin - or
+covers a surface or a set of faces with a Voronoi or cubic one.
 The workflow: pick the
 region, say whether the lattice goes inside or on the skin, where the struts sit
 relative to the surface, then the porosity and strut thickness. The result is a
@@ -72,8 +73,8 @@ Design workspace, two places (the same command):
    | Input | Default (first use) | What it does |
    |---|---|---|
    | **Preset** | Cubic - cell 1 mm, strut 0.65 mm | Fills in Cell, Define by, the porosity or cell size, Strut thickness, Organic, Output and Placement. Changing any of those afterwards turns it back to *Custom*. Geometry only. See the presets table below. |
-   | **Cell** | Cubic - regular grid of struts (from the preset) | *Voronoi - irregular foam* or *Cubic - regular grid of struts*. |
-   | **Grid orientation** | Design X, Y, Z | Cubic only. *Design X, Y, Z*: struts along the design axes, a node at the centre of the region. *Along an edge or axis*: the grid is turned onto a picked axis, with a node on it. |
+   | **Cell** | Cubic - struts along the cube edges (from the preset) | *Voronoi - irregular foam*, or a regular cell: *Cubic*, *BCC*, *FCC*, *Octet truss*, *Diamond*, *Kelvin*. See **The cells** below. On a *Surface* lattice only Voronoi and Cubic are allowed. |
+   | **Grid orientation** | Design X, Y, Z | Regular cells only. *Design X, Y, Z*: struts along the design axes, a node at the centre of the region. *Along an edge or axis*: the grid is turned onto a picked axis, with a node on it. |
    | **Axis** | - | Shown for *Along an edge or axis*. A straight edge, sketch line, construction axis or cylindrical face. |
    | **Align** | Opposite cell corners on the axis | Shown for *Along an edge or axis*. *Opposite cell corners on the axis*: the cell diagonal lies on the axis. *A cell edge on the axis*: one strut direction lies on it. |
    | **Spin about the axis** | 0 deg | Shown for *Along an edge or axis*. Turns the grid round the axis. |
@@ -164,9 +165,9 @@ remembered preset is not *Custom*, it is applied again when the dialog opens.
 Live in the panel, before you build:
 
 - **cell size** and approximate pore size (mm);
-- **porosity**: for Cubic, the unit cell's porosity; for Voronoi with *Cell
-  size*, the approximate porosity;
-- **grid** (Cubic): design axes, or cell diagonal / cell edge along the axis and
+- **porosity**: for a regular cell, the unit cell's porosity; for Voronoi with
+  *Cell size*, the approximate porosity;
+- **grid** (regular cells): design axes, or cell diagonal / cell edge along the axis and
   the spin;
 - **cells**: approximate count and total strut length (mm);
 - **mesh**: voxel size and expected triangles, or for a Form, a note that the
@@ -221,8 +222,13 @@ the lattice with the rest of the part.
 - At sharp edges, Middle and External skin struts sit slightly low (Flush is
   trimmed, so it is not affected).
 - Surface lattices assume cells smaller than the surface's radius of curvature.
-- In Cubic mode the quoted porosity is the unit cell's; the trimmed part's own
-  porosity can differ and is reported after the build.
+- For a regular cell the quoted porosity is the unit cell's; the trimmed part's
+  own porosity can differ and is reported after the build. With *Skin* on, the
+  skin struts and the short ties to them add material, so the part is denser
+  than its unit cell (a 24 mm diamond box at 80 %: about 76 %).
+- BCC, FCC, octet, diamond and Kelvin fill a volume only. Their struts meet at
+  up to 12 per node (octet, FCC), which a Form cage may not manage; the build then
+  falls back to a mesh and says why.
 - A big mesh uses several CPU cores and a few GB of memory; the engine stops
   after one hour.
 - The engine writes its temporary files to a `work` folder inside the installed
@@ -234,9 +240,9 @@ the lattice with the rest of the part.
 |---|---|
 | **Region** | A solid, surface or mesh body, or one or more faces. Clicking a solid picks a face: pick the body in the browser, or tick **Whole body**. |
 | **Preset** | Cubic parameter sets; choosing one fills in the cell, porosity, strut, organic, output and placement, and touching any of those turns it back to *Custom*. They set **geometry only** - cell, strut and porosity - and are not a reproduction of any published implant, its material, process or test results. A 1 mm cell with 0.65 mm struts is only a 39 % unit cell (pores 0.35 mm), so both readings of "1 mm" are listed: *cell 1 mm, strut 0.65 mm* (the default, 39 %), *pore 1 mm, strut 0.65 mm* (cell 1.65 mm, 72 %), *cell 1 mm, 80 %* (strut 0.325 mm), and *strut 0.65 mm, 70 / 80 / 90 %* with the cell solved (2.00 mm at 80 %). |
-| **Cell** | *Voronoi*: an irregular foam from relaxed random seeds. *Cubic*: a regular grid of struts. |
-| **Grid orientation** | Cubic only. *Design X, Y, Z*: struts along the design axes, a node at the centre of the region. *Along an edge or axis*: pick a straight edge, sketch line, construction axis or cylindrical face; the grid is turned onto it with a node on that line. **Align** *Opposite cell corners on the axis* puts the cell diagonal along it - the axis runs through two opposite vertices of every cell it crosses; *A cell edge on the axis* puts one strut direction along it. **Spin about the axis** turns the grid round the axis. |
-| **Lattice** | Shown only when the region is **closed**, and reset to *choose* every time a closed region is picked, so the choice is always made on purpose. *Volume* fills the region with a 3D Voronoi foam. *Surface* puts a Voronoi net on its skin only. An open region is always *Surface*. |
+| **Cell** | *Voronoi*: an irregular foam from relaxed random seeds. The regular cells (*Cubic*, *BCC*, *FCC*, *Octet truss*, *Diamond*, *Kelvin*) tile cubes of side *cell size*; see **The cells**. |
+| **Grid orientation** | Regular cells only. *Design X, Y, Z*: struts along the design axes, a node at the centre of the region. *Along an edge or axis*: pick a straight edge, sketch line, construction axis or cylindrical face; the grid is turned onto it with a node on that line. **Align** *Opposite cell corners on the axis* puts the cell diagonal along it - the axis runs through two opposite vertices of every cell it crosses; *A cell edge on the axis* puts one strut direction along it. **Spin about the axis** turns the grid round the axis. |
+| **Lattice** | Shown only when the region is **closed**, and reset to *choose* every time a closed region is picked, so the choice is always made on purpose. *Volume* fills the region with the lattice. *Surface* puts a Voronoi or cubic net on its skin only. An open region is always *Surface*. |
 | **Placement** | *Flush*: the struts sit inside, their outer side on the surface, and nothing pokes through (the mesh is also trimmed to the surface). *Middle*: struts centred on the surface. *External*: struts outside, their inner side on the surface. On an open surface, "inside" is the back of the face; **Flip side** swaps it. |
 | **Skin struts** | Volume lattice: also run struts along the surface, closing the cut cells, so no strut ends loose on the skin. |
 | **Border strut** | Open surface: run a strut along its edges. |
@@ -256,6 +262,26 @@ The panel underneath shows, live, the cell size, the pore size, the cell count, 
 strut length and the expected mesh size, and warns when the pores come out
 narrower than the struts.
 
+### The cells
+
+Every regular cell tiles cubes of side *cell size* (s), so the grid orientation,
+the skin and the cell-size / porosity solving work the same for all of them. The
+skin of a regular volume lattice follows the cube walls; the interior struts that
+end on the skin are tied to it by short struts along the surface.
+
+| Cell | Struts | Strut length per cell | Struts per node | Cell size for 80 % with 0.65 mm struts |
+|---|---|---|---|---|
+| Cubic | the cube edges | 3 s | 6 | 2.00 mm |
+| BCC | cube centre to the 8 corners | 4 sqrt3 s = 6.93 s | 8 | 3.05 mm |
+| FCC | the face diagonals | 6 sqrt2 s = 8.49 s | 4 at face centres, 12 at corners | 3.36 mm |
+| Octet truss | every FCC point to its 12 nearest | 12 sqrt2 s = 16.97 s | 12 | 4.76 mm |
+| Diamond | the diamond-cubic bonds, s sqrt3 / 4 long | 4 sqrt3 s = 6.93 s | 4 | 3.05 mm |
+| Kelvin | the edges of truncated octahedra, s / (2 sqrt2) long | 6 sqrt2 s = 8.49 s | 4 | 3.31 mm |
+
+BCC and diamond have the same solid fraction at every d/s - both are rods along
+the cube diagonals at the same density - but diamond's nodes join only four
+struts, and its struts are half as long.
+
 ### What "porosity" means
 
 - **Cubic cell**: the porosity of the **unit cell**, solved exactly - three struts
@@ -266,6 +292,12 @@ narrower than the struts.
   20 mm box the part's own porosity jumps between 75.6 and 82.8 % with how many
   grid planes fit, nothing between. The part's measured porosity is still
   reported next to the unit cell's.
+- **BCC, FCC, octet, diamond, Kelvin**: also the porosity of the unit cell, but
+  their struts overlap at the nodes in ways no closed formula follows, so the
+  solid fraction was **measured** once per cell for d/s from 0.02 up to solid
+  (4 M points per cell against the struts; the same measurement gives the cubic
+  cell's exact value to 5e-5) and is interpolated from that table. The tests
+  re-measure it at d/s 0.3 with other points.
 
 - **Volume lattice**: the void fraction of the lattice envelope. For *flush* that is
   the region itself. For *middle* and *external* it is the region grown by the

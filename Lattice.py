@@ -60,8 +60,18 @@ def _log(msg):
 
 def _core():
     """Fresh import of the worker module. This is the hot reload."""
-    if ADDIN_DIR not in sys.path:
+    if not sys.path or sys.path[0] != ADDIN_DIR:
+        if ADDIN_DIR in sys.path:
+            sys.path.remove(ADDIN_DIR)
         sys.path.insert(0, ADDIN_DIR)
+    # every add-in shares one interpreter: a vl_* module another install loaded
+    # first (the old VoronoiLattice) would be "reloaded" from ITS folder - drop
+    # anything of ours that does not come from here
+    for name in ('vl_core', 'vl_plan', 'vl_form', 'vl_engine'):
+        mod = sys.modules.get(name)
+        if mod is not None and os.path.dirname(os.path.realpath(
+                getattr(mod, '__file__', '') or '')) != os.path.realpath(ADDIN_DIR):
+            del sys.modules[name]
     if 'vl_core' in sys.modules:
         return importlib.reload(sys.modules['vl_core'])
     return importlib.import_module('vl_core')
